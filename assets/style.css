@@ -1,0 +1,34 @@
+/* ============================= */
+/* ROBÔ ASSISTENTE PROFISSIONAL */
+/* ============================= */
+
+.assistente-robot {
+    position: fixed;
+    bottom: 40px;       /* mais respiro */
+    right: 60px;        /* afastado do canto */
+    z-index: 999;
+    background: transparent;
+}
+
+/* imagem */
+.robot-img {
+    width: 110px; /* 15-20% menor */
+    animation: float 4s ease-in-out infinite;
+    background: transparent;
+
+    /* brilho suave com feather */
+    filter: drop-shadow(0 0 15px rgba(34,197,94,0.25));
+}
+
+/* flutuação mais suave */
+@keyframes float {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-6px); }
+    100% { transform: translateY(0px); }
+}
+
+/* hover discreto */
+.robot-img:hover {
+    transform: scale(1.03);
+    transition: 0.3s ease;
+}
