@@ -87,7 +87,7 @@ def kpi_card(label, value, sub, badge_text, badge_cls, value_cls=""):
         html.Div(className='kpi-bar'),
     ])
 
-def chart_card(eyebrow, title, graph_id, height=300):
+def chart_card(eyebrow, title, figure, height=300):
     return html.Div(style={
         'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
         'borderRadius':'10px','overflow':'hidden',
@@ -105,7 +105,7 @@ def chart_card(eyebrow, title, graph_id, height=300):
                 'fontWeight':'700','color':'#e8ede9',
             }),
         ]),
-        dcc.Graph(id=graph_id, config={'displayModeBar':False}, style={'height':f'{height}px'}),
+        dcc.Graph(figure=figure, config={'displayModeBar':False}, style={'height':f'{height}px'}),
     ])
 
 def stat_row(label, value, pct, up=True):
@@ -528,50 +528,6 @@ app.layout = html.Div([
         ])
     ]),
 
-    # MODAL NOVA TRANSAÇÃO
-    html.Div(id='modal-txn-overlay', style={'display':'none'}, children=[
-        html.Div(className='modal-overlay', children=[
-            html.Div(className='modal-box', children=[
-                html.Button("✕", id='btn-modal-txn-close', className='modal-close'),
-                html.Div("Nova Transação", className='modal-title'),
-                html.Div("Registre uma nova entrada ou saída financeira", className='modal-sub'),
-                html.Div(className='field-group', children=[
-                    html.Div("Descrição", className='field-label'),
-                    dcc.Input(id='txn-desc', type='text',
-                              placeholder='Ex: Venda — Cliente XYZ', className='input-field'),
-                ]),
-                html.Div(style={'display':'grid','gridTemplateColumns':'1fr 1fr','gap':'16px'}, children=[
-                    html.Div(className='field-group', children=[
-                        html.Div("Categoria", className='field-label'),
-                        dcc.Dropdown(id='txn-cat',
-                            options=[{'label':'Receita','value':'Receita'},
-                                     {'label':'Despesa','value':'Despesa'}],
-                            placeholder='Selecione...',
-                            style={'background':'#1a1f1c','color':'#e8ede9'}),
-                    ]),
-                    html.Div(className='field-group', children=[
-                        html.Div("Valor (R$)", className='field-label'),
-                        dcc.Input(id='txn-valor', type='number',
-                                  placeholder='0,00', className='input-field'),
-                    ]),
-                ]),
-                html.Div(className='field-group', children=[
-                    html.Div("Data", className='field-label'),
-                    dcc.Input(id='txn-data', type='text',
-                              placeholder='DD/MM/AAAA', className='input-field'),
-                ]),
-                html.Div(style={'marginTop':'8px','display':'flex','gap':'10px','justifyContent':'flex-end'}, children=[
-                    html.Button("Cancelar", id='btn-modal-txn-close2', className='btn-danger'),
-                    html.Button("✓  Salvar Transação", id='btn-txn-save', className='btn-action'),
-                ]),
-                html.Div(id='txn-save-msg', style={
-                    'marginTop':'14px','fontSize':'12px','textAlign':'right',
-                    'fontFamily':"'Space Mono',monospace",
-                }),
-            ])
-        ])
-    ]),
-
     # LOGIN
     html.Div(id='screen-login', className='screen-login', children=[
         html.Div(className='login-top-bar', children=[
@@ -730,46 +686,20 @@ def nav_click(n1, n2, n3, n4):
 def toggle_modal_config(*_):
     return {'display':'block'} if ctx.triggered_id == 'nav-config' else {'display':'none'}
 
-# MODAL NOVA TRANSAÇÃO
-@app.callback(
-    Output('modal-txn-overlay','style'),
-    Input('btn-nova-txn','n_clicks'),
-    Input('btn-modal-txn-close','n_clicks'),
-    Input('btn-modal-txn-close2','n_clicks'),
-    Input('btn-txn-save','n_clicks'),
-    prevent_initial_call=True,
-)
-def toggle_modal_txn(*_):
-    return {'display':'block'} if ctx.triggered_id == 'btn-nova-txn' else {'display':'none'}
-
-# SALVAR TRANSAÇÃO
-@app.callback(
-    Output('txn-save-msg','children'),
-    Output('txn-save-msg','style'),
-    Input('btn-txn-save','n_clicks'),
-    State('txn-desc','value'), State('txn-cat','value'),
-    State('txn-valor','value'), State('txn-data','value'),
-    prevent_initial_call=True,
-)
-def save_txn(n, desc, cat, valor, data):
-    if desc and cat and valor:
-        return (f'✓  Transação "{desc}" registrada com sucesso!',
-                {'color':'#3ddc84','fontFamily':"'Space Mono',monospace",'fontSize':'11px','textAlign':'right','marginTop':'14px'})
-    return ('⚠  Preencha todos os campos obrigatórios.',
-            {'color':'#ff5c5c','fontFamily':"'Space Mono',monospace",'fontSize':'11px','textAlign':'right','marginTop':'14px'})
-
 # TOGGLES
-for toggle_id in ['toggle-notif','toggle-dark','toggle-autoexp','toggle-auto']:
-    @app.callback(
-        Output(toggle_id,'className'),
-        Input(toggle_id,'n_clicks'),
-        State(toggle_id,'className'),
-        prevent_initial_call=True,
-    )
-    def _toggle(n, cls):
-        return 'toggle off' if cls and 'on' in cls else 'toggle on'
+@app.callback(Output('toggle-notif','className'), Input('toggle-notif','n_clicks'), State('toggle-notif','className'), prevent_initial_call=True)
+def _t1(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 
-# EXPORTAR EXCEL (sidebar)
+@app.callback(Output('toggle-dark','className'), Input('toggle-dark','n_clicks'), State('toggle-dark','className'), prevent_initial_call=True)
+def _t2(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
+
+@app.callback(Output('toggle-autoexp','className'), Input('toggle-autoexp','n_clicks'), State('toggle-autoexp','className'), prevent_initial_call=True)
+def _t3(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
+
+@app.callback(Output('toggle-auto','className'), Input('toggle-auto','n_clicks'), State('toggle-auto','className'), prevent_initial_call=True)
+def _t4(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
+
+# EXPORTAR EXCEL (sidebar) — só dispara com clique real em nav-export
 @app.callback(
     Output('download-excel','data'),
     Output('toast','children'),
@@ -778,6 +708,8 @@ for toggle_id in ['toggle-notif','toggle-dark','toggle-autoexp','toggle-auto']:
     prevent_initial_call=True,
 )
 def export_excel(n):
+    if not n or n < 1:
+        raise dash.exceptions.PreventUpdate
     data = gerar_excel()
     fname = f"GUAPO_ERP_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     toast = html.Div([
@@ -787,16 +719,93 @@ def export_excel(n):
     ], className='toast')
     return dcc.send_bytes(data, fname), toast, {'display':'block'}
 
-# EXPORTAR EXCEL (botão DRE)
+# HORAS EXTRAS — cálculo automático
 @app.callback(
-    Output('download-excel','data', allow_duplicate=True),
-    Output('toast','children', allow_duplicate=True),
-    Output('toast','style',    allow_duplicate=True),
-    Input('btn-dre-export','n_clicks'),
-    prevent_initial_call=True,
+    Output('dre-he-result',        'children'),
+    Output('dre-he-total-display', 'children'),
+    Input('dre-he-qtd',   'value'),
+    Input('dre-he-valor', 'value'),
+    prevent_initial_call=False,
 )
-def dre_export(n):
-    return export_excel(n)
+def calc_horas_extras(qtd, valor):
+    if qtd and valor:
+        total = float(qtd) * float(valor)
+        fmt = f"R$ {total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        return fmt, fmt
+    return 'R$ —', 'R$ —'
+
+# DRE — RECEITA TOTAL
+@app.callback(
+    Output('res-receita-total', 'children'),
+    Input('dre-venda-vista','value'), Input('dre-venda-prazo','value'),
+    Input('dre-or-juros','value'),    Input('dre-or-alug','value'),
+    Input('dre-or-outras','value'),   Input('dre-or-fundos','value'),
+    Input('dre-or-bonif','value'),
+    prevent_initial_call=False,
+)
+def calc_receita_total(*vals):
+    total = sum(float(v) for v in vals if v is not None)
+    if total == 0: return 'R$ 0,00'
+    return f"R$ {total:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+
+# DRE — MARGEM DE CONTRIBUIÇÃO
+@app.callback(
+    Output('res-margem', 'children'),
+    Input('dre-venda-vista','value'), Input('dre-venda-prazo','value'),
+    Input('dre-or-juros','value'),    Input('dre-or-alug','value'),
+    Input('dre-or-outras','value'),   Input('dre-or-fundos','value'),
+    Input('dre-or-bonif','value'),
+    Input('dre-c-bebidas','value'),   Input('dre-c-bolos','value'),
+    Input('dre-c-carnes','value'),    Input('dre-c-cigarros','value'),
+    Input('dre-c-conv','value'),      Input('dre-c-estcoz','value'),
+    Input('dre-c-picoles','value'),   Input('dre-c-salgados','value'),
+    Input('dre-c-insumos','value'),   Input('dre-c-embal','value'),
+    Input('dre-c-recarga','value'),   Input('dre-c-bichos','value'),
+    Input('dre-c-buffet','value'),
+    prevent_initial_call=False,
+)
+def calc_margem(*vals):
+    receita = sum(float(v) for v in vals[:7]  if v is not None)
+    compras = sum(float(v) for v in vals[7:]  if v is not None)
+    margem  = receita - compras
+    if receita == 0 and compras == 0: return '—'
+    return f"R$ {margem:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+
+# DRE — LUCRO BRUTO / OPERACIONAL / LÍQUIDO
+_REC_IDS  = ['dre-venda-vista','dre-venda-prazo','dre-or-juros','dre-or-alug',
+             'dre-or-outras','dre-or-fundos','dre-or-bonif']
+_COMP_IDS = ['dre-c-bebidas','dre-c-bolos','dre-c-carnes','dre-c-cigarros','dre-c-conv',
+             'dre-c-estcoz','dre-c-picoles','dre-c-salgados','dre-c-insumos','dre-c-embal',
+             'dre-c-recarga','dre-c-bichos','dre-c-buffet']
+_CF_IDS   = ['dre-cf-energia','dre-cf-tel','dre-cf-agua','dre-cf-iptu','dre-cf-sal',
+             'dre-cf-enc','dre-cf-imp','dre-cf-seg','dre-cf-diar']
+_CV_IDS   = ['dre-cv-sist','dre-cv-terc','dre-cv-exped','dre-cv-honor','dre-cv-manut',
+             'dre-cv-viag','dre-cv-taxas','dre-cv-unif','dre-cv-limp','dre-cv-alug',
+             'dre-cv-caixa','dre-cv-mora','dre-cv-banco','dre-cv-cart','dre-cv-brindes',
+             'dre-cv-utens','dre-cv-veic','dre-cv-segpred','dre-cv-gerais','dre-cv-gas',
+             'dre-cv-estoque','dre-cv-comiss']
+
+@app.callback(
+    Output('res-lucro-bruto','children'),
+    Output('res-operacional', 'children'),
+    Output('res-liquido',     'children'),
+    [Input(i,'value') for i in _REC_IDS + _COMP_IDS + _CF_IDS + _CV_IDS],
+    prevent_initial_call=False,
+)
+def calc_resultados(*vals):
+    nr = len(_REC_IDS); nc = len(_COMP_IDS); nf = len(_CF_IDS)
+    receita     = sum(float(v) for v in vals[:nr]       if v is not None)
+    compras     = sum(float(v) for v in vals[nr:nr+nc]  if v is not None)
+    cf          = sum(float(v) for v in vals[nr+nc:nr+nc+nf] if v is not None)
+    cv          = sum(float(v) for v in vals[nr+nc+nf:] if v is not None)
+    lucro_bruto = (receita - compras) - cf
+    operacional = lucro_bruto - cv
+    liquido     = operacional
+    def fmt(v):
+        if receita == 0 and compras == 0 and cf == 0 and cv == 0: return '—'
+        return f"R$ {v:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+    return fmt(lucro_bruto), fmt(operacional), fmt(liquido)
+
 
 # UPLOAD CSV
 @app.callback(
@@ -812,6 +821,55 @@ def parse_upload(contents, filename):
     decoded = base64.b64decode(content_string).decode('utf-8')
     rows = [line.split(',') for line in decoded.strip().split('\n')]
     return {'filename': filename, 'rows': rows}
+
+# ── FUNÇÕES DE GRÁFICOS ────────────────────────────────────────────────────────
+def make_fig_main():
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name='Receita', x=MESES, y=RECEITA, marker_color='rgba(61,220,132,0.7)', marker_line_width=0))
+    fig.add_trace(go.Bar(name='Despesa', x=MESES, y=DESPESA, marker_color='rgba(255,92,92,0.6)',  marker_line_width=0))
+    fig.add_trace(go.Scatter(name='Lucro', x=MESES, y=LUCRO, mode='lines+markers',
+                             line=dict(color='#e8c97a',width=2.5), marker=dict(size=6,color='#e8c97a')))
+    fig.update_layout(**CHART_LAYOUT, barmode='group')
+    return fig
+
+def make_fig_bar():
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name='Receita', x=MESES, y=RECEITA, marker_color='rgba(61,220,132,0.75)', marker_line_width=0))
+    fig.add_trace(go.Bar(name='Despesa', x=MESES, y=DESPESA, marker_color='rgba(255,92,92,0.65)',  marker_line_width=0))
+    fig.update_layout(**CHART_LAYOUT, barmode='group')
+    return fig
+
+def make_fig_pie():
+    labels = ['Pessoal','Administrativo','Marketing','Infraestrutura','Outros']
+    values = [42, 15, 8, 9, 4]
+    colors = ['#3ddc84','#c9a84c','#5c9eff','#e8ede9','#4d5e52']
+    fig = go.Figure(go.Pie(labels=labels, values=values, hole=0.55,
+        marker=dict(colors=colors, line=dict(color='#0d0f0e',width=2)),
+        textfont=dict(family='Space Mono', size=10, color='#0d0f0e')))
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
+
+def make_fig_margin():
+    margens = [l/r*100 for l,r in zip(LUCRO,RECEITA)]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=MESES, y=margens, mode='lines+markers',
+        fill='tozeroy', fillcolor='rgba(61,220,132,0.07)',
+        line=dict(color='#3ddc84',width=2.5), marker=dict(size=6,color='#3ddc84'), name='Margem %'))
+    fig.add_hline(y=30, line_dash='dot', line_color='rgba(201,168,76,0.5)',
+        annotation_text='Meta 30%', annotation_font=dict(color='#c9a84c',size=9))
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
+
+def make_fig_acum():
+    acum, s = [], 0
+    for l in LUCRO:
+        s += l; acum.append(s)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=MESES, y=acum, mode='lines+markers',
+        fill='tozeroy', fillcolor='rgba(201,168,76,0.07)',
+        line=dict(color='#c9a84c',width=2.5), marker=dict(size=6,color='#c9a84c'), name='Lucro Acumulado'))
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
 
 # CONTEÚDO PRINCIPAL
 @app.callback(
@@ -847,7 +905,6 @@ def render_content(tab, csv_data):
                 ]),
                 html.Div(style={'display':'flex','gap':'10px','alignItems':'flex-end'}, children=[
                     html.Div("Jan — Dez 2025", className='section-period'),
-                    html.Button("+ Nova Transação", id='btn-nova-txn', className='btn-action'),
                 ]),
             ]),
             html.Div(className='kpi-grid', children=[
@@ -870,7 +927,7 @@ def render_content(tab, csv_data):
                 ]),
             ]),
             html.Div(style={'display':'grid','gridTemplateColumns':'2fr 1fr','gap':'20px'}, children=[
-                chart_card("Evolução Anual", "Receita vs Despesa vs Lucro", "fig-main", 280),
+                chart_card("Evolução Anual", "Receita vs Despesa vs Lucro", make_fig_main(), 280),
                 html.Div(style={
                     'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
                     'borderRadius':'10px','padding':'22px',
@@ -897,63 +954,240 @@ def render_content(tab, csv_data):
                 ]),
             ]),
             html.Div(className='charts-grid-2', children=[
-                chart_card("Receita & Resultado", "Evolução Mensal Completa", "fig-bar",    300),
-                chart_card("Composição de Despesas", "Por Categoria",         "fig-pie",    300),
+                chart_card("Receita & Resultado", "Evolução Mensal Completa", make_fig_bar(), 300),
+                chart_card("Composição de Despesas", "Por Categoria", make_fig_pie(), 300),
             ]),
             html.Div(className='charts-grid-2', children=[
-                chart_card("Tendência de Margem", "Margem Líquida % por Mês", "fig-margin", 260),
-                chart_card("Lucro Acumulado",     "Acumulado do Exercício 2025","fig-acum", 260),
+                chart_card("Tendência de Margem", "Margem Líquida % por Mês", make_fig_margin(), 260),
+                chart_card("Lucro Acumulado", "Acumulado do Exercício 2025", make_fig_acum(), 260),
             ]),
         ])
 
     # ── DRE ────────────────────────────────────────────────────────────────────
     elif tab == 'tab-dre':
-        tipo_styles = {
-            'receita_bruta': {'fontWeight':'700','color':'#3ddc84','background':'rgba(61,220,132,0.05)'},
-            'deducao':       {'fontWeight':'400','color':'#ff5c5c','background':'transparent'},
-            'subtotal':      {'fontWeight':'700','color':'#e8c97a','background':'rgba(201,168,76,0.04)','borderTop':'1px solid rgba(255,255,255,0.07)'},
-            'ebitda':        {'fontWeight':'700','color':'#3ddc84','background':'rgba(61,220,132,0.07)'},
-            'lucro':         {'fontWeight':'700','color':'#3ddc84','background':'rgba(61,220,132,0.12)','fontSize':'15px'},
-            'item':          {'fontWeight':'400','color':'#8fa894','background':'transparent'},
-        }
-        rows = []
-        for r in DRE_MOCK:
-            st = tipo_styles.get(r['tipo'], {})
-            rows.append(html.Tr(style={**st, 'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
-                html.Td(r['conta'], style={'padding':'11px 20px','fontFamily':"'Sora',sans-serif",'fontSize':'13px'}),
-                html.Td(r['jan'],   style={'padding':'11px 16px','textAlign':'right','fontFamily':"'Space Mono',monospace",'fontSize':'12px'}),
-                html.Td(r['fev'],   style={'padding':'11px 16px','textAlign':'right','fontFamily':"'Space Mono',monospace",'fontSize':'12px'}),
-                html.Td(r['mar'],   style={'padding':'11px 16px','textAlign':'right','fontFamily':"'Space Mono',monospace",'fontSize':'12px'}),
-                html.Td(r['total'], style={'padding':'11px 20px','textAlign':'right','fontFamily':"'Space Mono',monospace",'fontSize':'12px','fontWeight':'700'}),
-            ]))
+
+        # helpers
+        def campo(field_id, placeholder='0,00', width='140px'):
+            return dcc.Input(
+                id=field_id, type='number', placeholder=placeholder,
+                debounce=True,
+                style={
+                    'width': width, 'padding': '7px 10px',
+                    'background': '#0d0f0e', 'border': '1px solid rgba(255,255,255,0.1)',
+                    'borderRadius': '6px', 'color': '#e8ede9',
+                    'fontFamily': "'Space Mono',monospace", 'fontSize': '12px',
+                    'textAlign': 'right', 'outline': 'none',
+                }
+            )
+
+        def row_titulo(num, label, color='#3ddc84', bg='rgba(61,220,132,0.07)', size='14px'):
+            return html.Tr(style={'background': bg, 'borderBottom': '1px solid rgba(255,255,255,0.08)'}, children=[
+                html.Td(f'{num}. {label}', colSpan=2, style={
+                    'padding': '13px 20px', 'fontWeight': '700',
+                    'fontSize': size, 'color': color,
+                    'fontFamily': "'Sora',sans-serif", 'letterSpacing': '0.3px',
+                }),
+            ])
+
+        def row_sub(num, label, field_id):
+            return html.Tr(style={'borderBottom': '1px solid rgba(255,255,255,0.04)'}, children=[
+                html.Td(f'  {num}  {label}', style={
+                    'padding': '10px 20px', 'fontSize': '13px',
+                    'color': '#8fa894', 'fontFamily': "'Sora',sans-serif",
+                }),
+                html.Td(campo(field_id), style={'padding': '6px 20px 6px 0', 'textAlign': 'right'}),
+            ])
+
+        def row_resultado(label, result_id, color='#e8c97a', bg='rgba(201,168,76,0.06)'):
+            return html.Tr(style={'background': bg, 'borderTop': '2px solid rgba(255,255,255,0.1)', 'borderBottom': '1px solid rgba(255,255,255,0.08)'}, children=[
+                html.Td(label, style={
+                    'padding': '13px 20px', 'fontWeight': '700',
+                    'fontSize': '14px', 'color': color,
+                    'fontFamily': "'Sora',sans-serif",
+                }),
+                html.Td(id=result_id, children='—', style={
+                    'padding': '13px 20px', 'textAlign': 'right',
+                    'fontWeight': '700', 'fontSize': '14px', 'color': color,
+                    'fontFamily': "'Space Mono',monospace",
+                }),
+            ])
 
         return html.Div([
             upload_bar,
             html.Div(className='section-header', children=[
                 html.Div([
-                    html.Div("Resultado do Exercício", className='section-eyebrow'),
-                    html.Div("DRE — 1º Trimestre 2025", className='section-title'),
+                    html.Div("Demonstração do Resultado", className='section-eyebrow'),
+                    html.Div("DRE — Lançamento de Dados", className='section-title'),
                 ]),
-                html.Button("⬇  Exportar Excel", id='btn-dre-export', className='btn-action'),
+                html.Div("Preencha os valores e os resultados serão calculados automaticamente",
+                         style={'fontSize':'12px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
             ]),
+
             html.Div(className='dre-card', children=[
                 html.Div(className='dre-card-header', children=[
-                    html.Div(["DRE · ", html.Span("Jan—Mar 2025")], className='dre-card-title'),
-                    html.Div("Valores em R$ (unidades)", className='dre-pill'),
+                    html.Div(["DRE · ", html.Span("Entrada de Dados")], className='dre-card-title'),
+                    html.Div("Valores em R$", className='dre-pill'),
                 ]),
-                html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[
-                    html.Thead(children=[html.Tr(
-                        style={'background':'#1a1f1c','borderBottom':'2px solid rgba(61,220,132,0.2)'},
-                        children=[html.Th(h, style={
-                            'padding':'12px 20px' if i in (0,4) else '12px 16px',
-                            'textAlign':'left' if i==0 else 'right',
-                            'fontFamily':"'Space Mono',monospace",'fontSize':'10px',
-                            'color':'#3ddc84' if i==4 else '#8fa894',
-                            'letterSpacing':'2px','textTransform':'uppercase',
-                        }) for i,h in enumerate(["Conta","Jan","Fev","Mar","Total"])]
-                    )]),
-                    html.Tbody(rows),
-                ]),
+
+                html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[html.Tbody([
+
+                    # ── 1. RECEITA TOTAL ──────────────────────────────────────
+                    row_titulo('1', 'RECEITA TOTAL', color='#3ddc84', bg='rgba(61,220,132,0.1)'),
+
+                    # ── 2. VENDAS DE MERCADORIAS ──────────────────────────────
+                    row_titulo('2', 'RECEITA — VENDAS DE MERCADORIAS', bg='rgba(61,220,132,0.05)'),
+                    row_sub('2.1', 'Vendas à Vista',  'dre-venda-vista'),
+                    row_sub('2.2', 'Vendas a Prazo',  'dre-venda-prazo'),
+
+                    # ── 3. VENDAS POR GRUPOS ──────────────────────────────────
+                    row_titulo('3', 'VENDAS POR GRUPOS', bg='rgba(255,255,255,0.02)'),
+                    row_sub('3.1',  'Bolos e Tortas',                'dre-g-bolos'),
+                    row_sub('3.2',  'Buffet',                        'dre-g-buffet'),
+                    row_sub('3.3',  'Cafés e Sucos',                 'dre-g-cafes'),
+                    row_sub('3.4',  'Lanches',                       'dre-g-lanches'),
+                    row_sub('3.5',  'Porções',                       'dre-g-porcoes'),
+                    row_sub('3.6',  'Salgados Prontos',              'dre-g-salgados'),
+                    row_sub('3.7',  'Drinks',                        'dre-g-drinks'),
+                    row_sub('3.8',  'Conveniência',                  'dre-g-conv'),
+                    row_sub('3.9',  'Cigarros',                      'dre-g-cigarros'),
+                    row_sub('3.10', 'Bebidas',                       'dre-g-bebidas'),
+                    row_sub('3.11', 'Picolé',                        'dre-g-picole'),
+                    row_sub('3.12', 'Estoque Cozinha',               'dre-g-estcoz'),
+                    row_sub('3.13', 'Bichos de Pelúcia e Brinquedos','dre-g-bichos'),
+                    row_sub('3.14', 'Carnes',                        'dre-g-carnes'),
+
+                    # ── 4. OUTRAS RECEITAS ────────────────────────────────────
+                    row_titulo('4', 'OUTRAS RECEITAS OPERACIONAIS', bg='rgba(255,255,255,0.02)'),
+                    row_sub('4.1', 'Juros Recebidos',                'dre-or-juros'),
+                    row_sub('4.2', 'Aluguéis',                       'dre-or-alug'),
+                    row_sub('4.4', 'Outras Receitas',                'dre-or-outras'),
+                    row_sub('4.5', 'Rendimentos Fundos de Investimentos', 'dre-or-fundos'),
+                    row_sub('4.6', 'Bonificações Recebidas',         'dre-or-bonif'),
+
+                    # ── RESULTADO: RECEITA TOTAL ──────────────────────────────
+                    row_resultado('1. RECEITA TOTAL', 'res-receita-total'),
+
+                    # ── 5. COMPRAS DE MERCADORIAS ─────────────────────────────
+                    row_titulo('5', 'TOTAL COMPRA DE MERCADORIAS', color='#ff5c5c', bg='rgba(255,92,92,0.05)'),
+                    row_sub('5.1',  'Bebidas',                       'dre-c-bebidas'),
+                    row_sub('5.2',  'Bolos e Tortas',                'dre-c-bolos'),
+                    row_sub('5.3',  'Carnes',                        'dre-c-carnes'),
+                    row_sub('5.4',  'Cigarros',                      'dre-c-cigarros'),
+                    row_sub('5.5',  'Conveniência',                  'dre-c-conv'),
+                    row_sub('5.6',  'Estoque Cozinha',               'dre-c-estcoz'),
+                    row_sub('5.7',  'Picolés',                       'dre-c-picoles'),
+                    row_sub('5.8',  'Salgados Prontos',              'dre-c-salgados'),
+                    row_sub('5.9',  'Insumos',                       'dre-c-insumos'),
+                    row_sub('5.10', 'Embalagens',                    'dre-c-embal'),
+                    row_sub('5.11', 'Recarga Celular',               'dre-c-recarga'),
+                    row_sub('5.12', 'Bichos de Pelúcia e Brinquedos','dre-c-bichos'),
+                    row_sub('5.13', 'Buffet',                        'dre-c-buffet'),
+
+                    # ── RESULTADO: MARGEM DE CONTRIBUIÇÃO ────────────────────
+                    row_resultado('5. MARGEM DE CONTRIBUIÇÃO', 'res-margem', color='#3ddc84', bg='rgba(61,220,132,0.08)'),
+
+                    # ── 6.1 CUSTOS FIXOS ──────────────────────────────────────
+                    row_titulo('6', 'TOTAL CUSTOS FIXOS + VARIÁVEIS', color='#ff5c5c', bg='rgba(255,92,92,0.05)'),
+                    row_titulo('6.1', 'Custos Fixos', color='#ff8080', bg='rgba(255,92,92,0.03)', size='13px'),
+                    row_sub('6.1.1', 'Energia Elétrica',             'dre-cf-energia'),
+                    row_sub('6.1.2', 'Telefone',                     'dre-cf-tel'),
+                    row_sub('6.1.3', 'Água',                         'dre-cf-agua'),
+                    row_sub('6.1.4', 'IPTU',                         'dre-cf-iptu'),
+                    row_sub('6.1.5', 'Salários / Férias / Rescisões / 13º', 'dre-cf-sal'),
+                    row_sub('6.1.6', 'Encargos Sociais',             'dre-cf-enc'),
+                    row_sub('6.1.7', 'Impostos',                     'dre-cf-imp'),
+                    row_sub('6.1.8', 'Seguro de Vida — Funcionários','dre-cf-seg'),
+                    row_sub('6.1.9', 'Diárias',                      'dre-cf-diar'),
+
+                    # ── 6.2 CUSTOS VARIÁVEIS ──────────────────────────────────
+                    row_titulo('6.2', 'Custos Variáveis', color='#ff8080', bg='rgba(255,92,92,0.03)', size='13px'),
+                    row_sub('6.2.1',  'Despesas com Sistemas',        'dre-cv-sist'),
+                    row_sub('6.2.2',  'Serviços de Terceiros',        'dre-cv-terc'),
+                    row_sub('6.2.3',  'Materiais de Expediente',      'dre-cv-exped'),
+                    row_sub('6.2.4',  'Honorários Contábeis',         'dre-cv-honor'),
+                    row_sub('6.2.5',  'Manutenção e Reposição',       'dre-cv-manut'),
+                    row_sub('6.2.6',  'Viagens e Estadias',           'dre-cv-viag'),
+                    row_sub('6.2.7',  'Taxas Diversas',               'dre-cv-taxas'),
+                    row_sub('6.2.8',  'Uniformes',                    'dre-cv-unif'),
+                    row_sub('6.2.9',  'Material de Limpeza',          'dre-cv-limp'),
+                    row_sub('6.2.10', 'Aluguéis e Locações',          'dre-cv-alug'),
+                    row_sub('6.2.11', 'Faltas e Sobras de Caixa',     'dre-cv-caixa'),
+                    row_sub('6.2.12', 'Juros de Mora',                'dre-cv-mora'),
+                    row_sub('6.2.13', 'Tarifas Bancárias',            'dre-cv-banco'),
+                    row_sub('6.2.14', 'Tarifas Cartões',              'dre-cv-cart'),
+                    row_sub('6.2.15', 'Brindes e Bonificações',       'dre-cv-brindes'),
+                    row_sub('6.2.16', 'Utensílios',                   'dre-cv-utens'),
+                    row_sub('6.2.17', 'Despesas com Veículos',        'dre-cv-veic'),
+                    row_sub('6.2.18', 'Seguros Edificações',          'dre-cv-segpred'),
+                    row_sub('6.2.19', 'Despesas Gerais',              'dre-cv-gerais'),
+                    row_sub('6.2.20', 'Gás GLP',                      'dre-cv-gas'),
+                    row_sub('6.2.21', 'Contagem Estoque',             'dre-cv-estoque'),
+                    row_sub('6.2.22', 'Comissões sobre Vendas',       'dre-cv-comiss'),
+
+                    # ── RESULTADOS FINAIS ─────────────────────────────────────
+                    row_resultado('7. LUCRO BRUTO DA EMPRESA',        'res-lucro-bruto',   color='#3ddc84', bg='rgba(61,220,132,0.08)'),
+                    row_resultado('8. RESULTADO OPERACIONAL',         'res-operacional',   color='#3ddc84', bg='rgba(61,220,132,0.06)'),
+                    row_resultado('9. RESULTADO LÍQUIDO',             'res-liquido',       color='#3ddc84', bg='rgba(61,220,132,0.12)'),
+
+                    # ── 10-12 FUNCIONÁRIOS / HORAS EXTRAS ────────────────────
+                    row_titulo('10', 'FUNCIONÁRIOS & HORAS EXTRAS', color='#5c9eff', bg='rgba(92,158,255,0.06)'),
+
+                    # 10. Total funcionários
+                    html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
+                        html.Td('  10.  Total de Funcionários', style={
+                            'padding':'10px 20px','fontSize':'13px',
+                            'color':'#8fa894','fontFamily':"'Sora',sans-serif",
+                        }),
+                        html.Td(campo('dre-func-total', placeholder='Nº funcionários', width='160px'),
+                                style={'padding':'6px 20px 6px 0','textAlign':'right'}),
+                    ]),
+
+                    # 11 + 12. Horas extras com cálculo automático
+                    html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)', 'background':'rgba(92,158,255,0.03)'}, children=[
+                        html.Td([
+                            html.Div('  11.  Total de Horas Extras', style={
+                                'fontSize':'13px','color':'#8fa894',
+                                'fontFamily':"'Sora',sans-serif",'marginBottom':'4px',
+                            }),
+                            html.Div(style={'display':'flex','alignItems':'center','gap':'8px','paddingLeft':'8px','paddingBottom':'4px'}, children=[
+                                html.Span('Horas:', style={'fontSize':'11px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
+                                dcc.Input(id='dre-he-qtd', type='number', placeholder='Qtd. horas', debounce=True,
+                                    style={'width':'110px','padding':'6px 10px','background':'#0d0f0e',
+                                           'border':'1px solid rgba(92,158,255,0.3)','borderRadius':'6px',
+                                           'color':'#5c9eff','fontFamily':"'Space Mono',monospace",'fontSize':'12px',
+                                           'outline':'none','textAlign':'right'}),
+                                html.Span('×  Valor/hora: R$', style={'fontSize':'11px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
+                                dcc.Input(id='dre-he-valor', type='number', placeholder='0,00', debounce=True,
+                                    style={'width':'110px','padding':'6px 10px','background':'#0d0f0e',
+                                           'border':'1px solid rgba(92,158,255,0.3)','borderRadius':'6px',
+                                           'color':'#5c9eff','fontFamily':"'Space Mono',monospace",'fontSize':'12px',
+                                           'outline':'none','textAlign':'right'}),
+                                html.Span('=', style={'fontSize':'13px','color':'#4d5e52'}),
+                                html.Span(id='dre-he-result', children='R$ —', style={
+                                    'fontSize':'13px','fontWeight':'700','color':'#5c9eff',
+                                    'fontFamily':"'Space Mono',monospace",
+                                    'background':'rgba(92,158,255,0.1)','padding':'4px 12px',
+                                    'borderRadius':'6px','minWidth':'120px','textAlign':'right',
+                                }),
+                            ]),
+                        ], style={'padding':'10px 20px'}),
+                        html.Td('', style={'width':'160px'}),
+                    ]),
+
+                    # 12. Valor total horas extras (calculado)
+                    html.Tr(style={'background':'rgba(92,158,255,0.05)','borderBottom':'2px solid rgba(92,158,255,0.15)'}, children=[
+                        html.Td('  12.  Valor Total de Horas Extras', style={
+                            'padding':'12px 20px','fontSize':'13px','fontWeight':'600',
+                            'color':'#5c9eff','fontFamily':"'Sora',sans-serif",
+                        }),
+                        html.Td(id='dre-he-total-display', children='R$ —', style={
+                            'padding':'12px 20px','textAlign':'right',
+                            'fontWeight':'700','fontSize':'14px','color':'#5c9eff',
+                            'fontFamily':"'Space Mono',monospace",
+                        }),
+                    ]),
+
+                ])]),
             ]),
         ])
 
@@ -990,7 +1224,6 @@ def render_content(tab, csv_data):
                     html.Div("Histórico Financeiro", className='section-eyebrow'),
                     html.Div("Transações Recentes", className='section-title'),
                 ]),
-                html.Button("+ Nova Transação", id='btn-nova-txn', className='btn-action'),
             ]),
             html.Div(className='table-card', children=[
                 html.Div(className='table-header', children=[
@@ -1015,59 +1248,6 @@ def render_content(tab, csv_data):
 
     return html.Div("Selecione uma aba.", style={'color':'#8fa894','padding':'40px'})
 
-# ── GRÁFICOS ───────────────────────────────────────────────────────────────────
-@app.callback(Output('fig-main','figure'), Input('active-tab','data'))
-def fig_main(_):
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name='Receita', x=MESES, y=RECEITA, marker_color='rgba(61,220,132,0.7)', marker_line_width=0))
-    fig.add_trace(go.Bar(name='Despesa', x=MESES, y=DESPESA, marker_color='rgba(255,92,92,0.6)',  marker_line_width=0))
-    fig.add_trace(go.Scatter(name='Lucro', x=MESES, y=LUCRO, mode='lines+markers',
-                             line=dict(color='#e8c97a',width=2.5), marker=dict(size=6,color='#e8c97a')))
-    fig.update_layout(**CHART_LAYOUT, barmode='group')
-    return fig
-
-@app.callback(Output('fig-bar','figure'), Input('active-tab','data'))
-def fig_bar(_):
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name='Receita', x=MESES, y=RECEITA, marker_color='rgba(61,220,132,0.75)', marker_line_width=0))
-    fig.add_trace(go.Bar(name='Despesa', x=MESES, y=DESPESA, marker_color='rgba(255,92,92,0.65)',  marker_line_width=0))
-    fig.update_layout(**CHART_LAYOUT, barmode='group')
-    return fig
-
-@app.callback(Output('fig-pie','figure'), Input('active-tab','data'))
-def fig_pie(_):
-    labels = ['Pessoal','Administrativo','Marketing','Infraestrutura','Outros']
-    values = [42, 15, 8, 9, 4]
-    colors = ['#3ddc84','#c9a84c','#5c9eff','#e8ede9','#4d5e52']
-    fig = go.Figure(go.Pie(labels=labels, values=values, hole=0.55,
-        marker=dict(colors=colors, line=dict(color='#0d0f0e',width=2)),
-        textfont=dict(family='Space Mono', size=10, color='#0d0f0e')))
-    fig.update_layout(**CHART_LAYOUT)
-    return fig
-
-@app.callback(Output('fig-margin','figure'), Input('active-tab','data'))
-def fig_margin(_):
-    margens = [l/r*100 for l,r in zip(LUCRO,RECEITA)]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=MESES, y=margens, mode='lines+markers',
-        fill='tozeroy', fillcolor='rgba(61,220,132,0.07)',
-        line=dict(color='#3ddc84',width=2.5), marker=dict(size=6,color='#3ddc84'), name='Margem %'))
-    fig.add_hline(y=30, line_dash='dot', line_color='rgba(201,168,76,0.5)',
-        annotation_text='Meta 30%', annotation_font=dict(color='#c9a84c',size=9))
-    fig.update_layout(**CHART_LAYOUT)
-    return fig
-
-@app.callback(Output('fig-acum','figure'), Input('active-tab','data'))
-def fig_acum(_):
-    acum, s = [], 0
-    for l in LUCRO:
-        s += l; acum.append(s)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=MESES, y=acum, mode='lines+markers',
-        fill='tozeroy', fillcolor='rgba(201,168,76,0.07)',
-        line=dict(color='#c9a84c',width=2.5), marker=dict(size=6,color='#c9a84c'), name='Lucro Acumulado'))
-    fig.update_layout(**CHART_LAYOUT)
-    return fig
 
 # ── INICIALIZAÇÃO ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
