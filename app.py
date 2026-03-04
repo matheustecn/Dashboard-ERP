@@ -14,6 +14,150 @@ import plotly.express as px
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 server = app.server  # required for Railway / Render / Gunicorn
 
+# ── MAPEAMENTO DE CAMPOS DRE ──────────────────────────────────────────────────
+# Todos os campos do DRE com seus IDs e nomes alternativos aceitos no CSV
+DRE_CAMPOS = {
+    # Vendas mercadorias
+    'venda_vista':  ['venda_vista', 'vendas_a_vista', 'vista', 'venda a vista'],
+    'venda_prazo':  ['venda_prazo', 'vendas_a_prazo', 'prazo', 'venda a prazo'],
+    # Vendas por grupo
+    'g_bolos':      ['g_bolos', 'bolos', 'bolos_tortas', 'bolos e tortas'],
+    'g_buffet':     ['g_buffet', 'buffet'],
+    'g_cafes':      ['g_cafes', 'cafes', 'cafes_sucos', 'cafes e sucos'],
+    'g_lanches':    ['g_lanches', 'lanches'],
+    'g_porcoes':    ['g_porcoes', 'porcoes', 'porções'],
+    'g_salgados':   ['g_salgados', 'salgados'],
+    'g_drinks':     ['g_drinks', 'drinks'],
+    'g_conv':       ['g_conv', 'conveniencia', 'conveniência'],
+    'g_cigarros':   ['g_cigarros', 'cigarros'],
+    'g_bebidas':    ['g_bebidas', 'bebidas'],
+    'g_picole':     ['g_picole', 'picole', 'picolé'],
+    'g_estcoz':     ['g_estcoz', 'estoque_cozinha', 'estcoz'],
+    'g_bichos':     ['g_bichos', 'bichos', 'bichos_brinquedos'],
+    'g_carnes':     ['g_carnes', 'carnes'],
+    # Outras receitas
+    'or_juros':     ['or_juros', 'juros_recebidos', 'juros recebidos'],
+    'or_alug':      ['or_alug', 'alugueis_receita', 'alugueis recebidos'],
+    'or_outras':    ['or_outras', 'outras_receitas', 'outras receitas'],
+    'or_fundos':    ['or_fundos', 'fundos', 'rendimentos_fundos'],
+    'or_bonif':     ['or_bonif', 'bonificacoes', 'bonificações recebidas'],
+    # Compras
+    'c_bebidas':    ['c_bebidas', 'compra_bebidas', 'compras bebidas'],
+    'c_bolos':      ['c_bolos', 'compra_bolos'],
+    'c_carnes':     ['c_carnes', 'compra_carnes'],
+    'c_cigarros':   ['c_cigarros', 'compra_cigarros'],
+    'c_conv':       ['c_conv', 'compra_conveniencia'],
+    'c_estcoz':     ['c_estcoz', 'compra_estcoz'],
+    'c_picoles':    ['c_picoles', 'compra_picoles'],
+    'c_salgados':   ['c_salgados', 'compra_salgados'],
+    'c_insumos':    ['c_insumos', 'insumos', 'compra_insumos'],
+    'c_embal':      ['c_embal', 'embalagens', 'compra_embalagens'],
+    'c_recarga':    ['c_recarga', 'recarga', 'recarga_celular'],
+    'c_bichos':     ['c_bichos', 'compra_bichos'],
+    'c_buffet':     ['c_buffet', 'compra_buffet'],
+    # Custos Fixos
+    'cf_energia':   ['cf_energia', 'energia', 'energia_eletrica', 'energia elétrica'],
+    'cf_tel':       ['cf_tel', 'telefone', 'tel'],
+    'cf_agua':      ['cf_agua', 'agua', 'água'],
+    'cf_iptu':      ['cf_iptu', 'iptu'],
+    'cf_sal':       ['cf_sal', 'salarios', 'salários', 'folha'],
+    'cf_enc':       ['cf_enc', 'encargos', 'encargos_sociais'],
+    'cf_imp':       ['cf_imp', 'impostos'],
+    'cf_seg':       ['cf_seg', 'seguro_vida', 'seguro vida'],
+    'cf_diar':      ['cf_diar', 'diarias', 'diárias'],
+    # Custos Variáveis
+    'cv_sist':      ['cv_sist', 'sistemas'],
+    'cv_terc':      ['cv_terc', 'servicos_terceiros', 'terceiros'],
+    'cv_exped':     ['cv_exped', 'expediente'],
+    'cv_honor':     ['cv_honor', 'honorarios', 'honorários'],
+    'cv_manut':     ['cv_manut', 'manutencao', 'manutenção'],
+    'cv_viag':      ['cv_viag', 'viagens'],
+    'cv_taxas':     ['cv_taxas', 'taxas'],
+    'cv_unif':      ['cv_unif', 'uniformes'],
+    'cv_limp':      ['cv_limp', 'limpeza'],
+    'cv_alug':      ['cv_alug', 'aluguel', 'alugueis'],
+    'cv_caixa':     ['cv_caixa', 'caixa', 'faltas_caixa'],
+    'cv_mora':      ['cv_mora', 'juros_mora', 'mora'],
+    'cv_banco':     ['cv_banco', 'tarifas_bancarias', 'banco'],
+    'cv_cart':      ['cv_cart', 'tarifas_cartao', 'cartao'],
+    'cv_brindes':   ['cv_brindes', 'brindes'],
+    'cv_utens':     ['cv_utens', 'utensilios', 'utensílios'],
+    'cv_veic':      ['cv_veic', 'veiculos', 'veículos'],
+    'cv_segpred':   ['cv_segpred', 'seguro_edificacoes'],
+    'cv_gerais':    ['cv_gerais', 'despesas_gerais', 'gerais'],
+    'cv_gas':       ['cv_gas', 'gas', 'gas_glp'],
+    'cv_estoque':   ['cv_estoque', 'contagem_estoque'],
+    'cv_comiss':    ['cv_comiss', 'comissoes', 'comissões'],
+}
+
+# Índice reverso: alias → chave canônica
+_ALIAS_MAP = {}
+for canonical, aliases in DRE_CAMPOS.items():
+    for alias in aliases:
+        _ALIAS_MAP[alias.lower().strip()] = canonical
+
+def parse_csv_to_dre(decoded_text):
+    """
+    Aceita CSV em dois formatos:
+      Formato A (recomendado): campo,valor  (uma linha por campo)
+      Formato B (tabela):      Bolos e Tortas,Buffet,...  (cabeçalho) + linha de valores
+    Retorna dicionário {campo_canonico: float_valor}
+    """
+    lines = [l.strip() for l in decoded_text.strip().split('\n') if l.strip()]
+    if not lines:
+        return {}, 0
+
+    result = {}
+
+    # Detectar separador
+    sep = ';' if lines[0].count(';') >= lines[0].count(',') else ','
+
+    header = [p.strip().strip('"').strip("'").lower() for p in lines[0].split(sep)]
+
+    # Formato A: duas colunas campo/valor
+    if len(header) == 2 and any(h in ('campo', 'field', 'conta', 'descricao', 'descrição') for h in header):
+        ci = 0 if header[0] in ('campo','field','conta','descricao','descrição') else 1
+        vi = 1 - ci
+        for line in lines[1:]:
+            parts = [p.strip().strip('"').strip("'") for p in line.split(sep)]
+            if len(parts) < 2:
+                continue
+            campo_raw = parts[ci].lower().strip()
+            canonical = _ALIAS_MAP.get(campo_raw)
+            if not canonical:
+                # tenta match parcial
+                for alias, can in _ALIAS_MAP.items():
+                    if alias in campo_raw or campo_raw in alias:
+                        canonical = can
+                        break
+            if not canonical:
+                continue
+            raw_val = parts[vi].replace('R$','').replace(' ','').replace('.','').replace(',','.')
+            try:
+                result[canonical] = float(raw_val)
+            except ValueError:
+                pass
+        return result, len(result)
+
+    # Formato B: cabeçalho com nomes de campos + linha(s) de valores
+    # Cada coluna do cabeçalho é um campo DRE
+    canonical_cols = []
+    for h in header:
+        canonical_cols.append(_ALIAS_MAP.get(h))
+
+    for line in lines[1:]:
+        parts = [p.strip().strip('"').strip("'") for p in line.split(sep)]
+        for i, val_raw in enumerate(parts):
+            if i >= len(canonical_cols) or canonical_cols[i] is None:
+                continue
+            val_raw = val_raw.replace('R$','').replace(' ','').replace('.','').replace(',','.')
+            try:
+                result[canonical_cols[i]] = float(val_raw)
+            except ValueError:
+                pass
+    return result, len(result)
+
+
 # ── DADOS MOCK ────────────────────────────────────────────────────────────────
 MESES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"]
 
@@ -125,6 +269,39 @@ def stat_row(label, value, pct, up=True):
             }),
         ]),
     ])
+
+# ── GERAR TEMPLATE CSV ────────────────────────────────────────────────────────
+def gerar_template_csv():
+    linhas = ["campo,valor"]
+    nomes_legiveis = {
+        'venda_vista': 'Vendas a Vista', 'venda_prazo': 'Vendas a Prazo',
+        'g_bolos': 'Bolos e Tortas', 'g_buffet': 'Buffet', 'g_cafes': 'Cafes e Sucos',
+        'g_lanches': 'Lanches', 'g_porcoes': 'Porcoes', 'g_salgados': 'Salgados',
+        'g_drinks': 'Drinks', 'g_conv': 'Conveniencia', 'g_cigarros': 'Cigarros',
+        'g_bebidas': 'Bebidas', 'g_picole': 'Picole', 'g_estcoz': 'Estoque Cozinha',
+        'g_bichos': 'Bichos e Brinquedos', 'g_carnes': 'Carnes',
+        'or_juros': 'Juros Recebidos', 'or_alug': 'Alugueis Receita',
+        'or_outras': 'Outras Receitas', 'or_fundos': 'Fundos Investimentos', 'or_bonif': 'Bonificacoes',
+        'c_bebidas': 'Compra Bebidas', 'c_bolos': 'Compra Bolos', 'c_carnes': 'Compra Carnes',
+        'c_cigarros': 'Compra Cigarros', 'c_conv': 'Compra Conveniencia', 'c_estcoz': 'Compra Estcoz',
+        'c_picoles': 'Compra Picoles', 'c_salgados': 'Compra Salgados', 'c_insumos': 'Insumos',
+        'c_embal': 'Embalagens', 'c_recarga': 'Recarga Celular', 'c_bichos': 'Compra Bichos',
+        'c_buffet': 'Compra Buffet',
+        'cf_energia': 'Energia Eletrica', 'cf_tel': 'Telefone', 'cf_agua': 'Agua',
+        'cf_iptu': 'IPTU', 'cf_sal': 'Salarios', 'cf_enc': 'Encargos Sociais',
+        'cf_imp': 'Impostos', 'cf_seg': 'Seguro Vida', 'cf_diar': 'Diarias',
+        'cv_sist': 'Sistemas', 'cv_terc': 'Servicos Terceiros', 'cv_exped': 'Expediente',
+        'cv_honor': 'Honorarios', 'cv_manut': 'Manutencao', 'cv_viag': 'Viagens',
+        'cv_taxas': 'Taxas', 'cv_unif': 'Uniformes', 'cv_limp': 'Limpeza',
+        'cv_alug': 'Aluguel', 'cv_caixa': 'Caixa', 'cv_mora': 'Juros Mora',
+        'cv_banco': 'Tarifas Bancarias', 'cv_cart': 'Tarifas Cartao',
+        'cv_brindes': 'Brindes', 'cv_utens': 'Utensilios', 'cv_veic': 'Veiculos',
+        'cv_segpred': 'Seguro Edificacoes', 'cv_gerais': 'Despesas Gerais',
+        'cv_gas': 'Gas GLP', 'cv_estoque': 'Contagem Estoque', 'cv_comiss': 'Comissoes',
+    }
+    for campo in DRE_CAMPOS.keys():
+        linhas.append(f"{campo},0")
+    return '\n'.join(linhas).encode('utf-8')
 
 # ── FUNÇÃO DE GERAÇÃO DO EXCEL ────────────────────────────────────────────────
 def gerar_excel():
@@ -325,6 +502,194 @@ def gerar_excel():
     buf.seek(0)
     return buf.read()
 
+# ── CONSTRUTOR DO TAB DRE (sempre no DOM) ────────────────────────────────────
+def _input_style():
+    return {
+        'width': '140px', 'padding': '7px 10px',
+        'background': '#0d0f0e', 'border': '1px solid rgba(255,255,255,0.1)',
+        'borderRadius': '6px', 'color': '#e8ede9',
+        'fontFamily': "'Space Mono',monospace", 'fontSize': '12px',
+        'textAlign': 'right', 'outline': 'none',
+    }
+
+def _campo(field_id, placeholder='0,00', width='140px'):
+    s = _input_style(); s['width'] = width
+    return dcc.Input(id=field_id, type='number', placeholder=placeholder, debounce=True, style=s)
+
+def _row_titulo(num, label, color='#3ddc84', bg='rgba(61,220,132,0.07)', size='14px'):
+    return html.Tr(style={'background': bg, 'borderBottom': '1px solid rgba(255,255,255,0.08)'}, children=[
+        html.Td(f'{num}. {label}', colSpan=2, style={
+            'padding': '13px 20px', 'fontWeight': '700', 'fontSize': size,
+            'color': color, 'fontFamily': "'Sora',sans-serif", 'letterSpacing': '0.3px',
+        }),
+    ])
+
+def _row_sub(num, label, field_id):
+    return html.Tr(style={'borderBottom': '1px solid rgba(255,255,255,0.04)'}, children=[
+        html.Td(f'  {num}  {label}', style={
+            'padding': '10px 20px', 'fontSize': '13px',
+            'color': '#8fa894', 'fontFamily': "'Sora',sans-serif",
+        }),
+        html.Td(_campo(field_id), style={'padding': '6px 20px 6px 0', 'textAlign': 'right'}),
+    ])
+
+def _row_resultado(label, result_id, color='#e8c97a', bg='rgba(201,168,76,0.06)'):
+    return html.Tr(style={'background': bg, 'borderTop': '2px solid rgba(255,255,255,0.1)', 'borderBottom': '1px solid rgba(255,255,255,0.08)'}, children=[
+        html.Td(label, style={
+            'padding': '13px 20px', 'fontWeight': '700', 'fontSize': '14px',
+            'color': color, 'fontFamily': "'Sora',sans-serif",
+        }),
+        html.Td(id=result_id, children='—', style={
+            'padding': '13px 20px', 'textAlign': 'right', 'fontWeight': '700',
+            'fontSize': '14px', 'color': color, 'fontFamily': "'Space Mono',monospace",
+        }),
+    ])
+
+def _build_dre_tab():
+    upload_bar = dcc.Upload(
+        id='upload-data',
+        children=html.Div(style={'display':'flex','alignItems':'center','justifyContent':'space-between','width':'100%','gap':'16px'}, children=[
+            html.Div(style={'display':'flex','alignItems':'center','gap':'12px'}, children=[
+                html.Span("⬆", className='upload-icon'),
+                html.Span(["Arraste ou clique para importar o ", html.Strong("DRE (.csv)"),
+                           " — campos preenchidos automaticamente"], className='upload-text'),
+            ]),
+            html.Div(id='upload-status-text', children="AGUARDANDO CSV", className='upload-status'),
+        ]),
+        className='upload-area', multiple=False,
+    )
+
+    csv_info = html.Div(id='csv-banner', className='csv-info', children=[
+        html.Div([
+            html.Strong("Como importar via CSV: "),
+            "Baixe o template em ", html.Strong("Baixar Template CSV"),
+            " na barra lateral, preencha os valores e importe aqui.",
+        ]),
+        html.Div([
+            html.Strong("Formato: "),
+            "duas colunas — ", html.Strong("campo"), " e ", html.Strong("valor"),
+            " (vírgula ou ponto-e-vírgula). Valores com R$, pontos e vírgulas são normalizados.",
+        ]),
+    ])
+
+    return html.Div([
+        upload_bar,
+        csv_info,
+        html.Div(className='section-header', children=[
+            html.Div([
+                html.Div("Demonstração do Resultado", className='section-eyebrow'),
+                html.Div("DRE — Lançamento de Dados", className='section-title'),
+            ]),
+            html.Div("Preencha os valores e os resultados serão calculados automaticamente",
+                     style={'fontSize':'12px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
+        ]),
+        html.Div(className='dre-card', children=[
+            html.Div(className='dre-card-header', children=[
+                html.Div(["DRE · ", html.Span("Entrada de Dados")], className='dre-card-title'),
+                html.Div("Valores em R$", className='dre-pill'),
+            ]),
+            html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[html.Tbody([
+                _row_titulo('1', 'RECEITA TOTAL', color='#3ddc84', bg='rgba(61,220,132,0.1)'),
+                _row_titulo('2', 'RECEITA — VENDAS DE MERCADORIAS', bg='rgba(61,220,132,0.05)'),
+                _row_sub('2.1', 'Vendas à Vista',  'dre-venda-vista'),
+                _row_sub('2.2', 'Vendas a Prazo',  'dre-venda-prazo'),
+                _row_titulo('3', 'VENDAS POR GRUPOS', bg='rgba(255,255,255,0.02)'),
+                _row_sub('3.1',  'Bolos e Tortas',                'dre-g-bolos'),
+                _row_sub('3.2',  'Buffet',                        'dre-g-buffet'),
+                _row_sub('3.3',  'Cafés e Sucos',                 'dre-g-cafes'),
+                _row_sub('3.4',  'Lanches',                       'dre-g-lanches'),
+                _row_sub('3.5',  'Porções',                       'dre-g-porcoes'),
+                _row_sub('3.6',  'Salgados Prontos',              'dre-g-salgados'),
+                _row_sub('3.7',  'Drinks',                        'dre-g-drinks'),
+                _row_sub('3.8',  'Conveniência',                  'dre-g-conv'),
+                _row_sub('3.9',  'Cigarros',                      'dre-g-cigarros'),
+                _row_sub('3.10', 'Bebidas',                       'dre-g-bebidas'),
+                _row_sub('3.11', 'Picolé',                        'dre-g-picole'),
+                _row_sub('3.12', 'Estoque Cozinha',               'dre-g-estcoz'),
+                _row_sub('3.13', 'Bichos de Pelúcia e Brinquedos','dre-g-bichos'),
+                _row_sub('3.14', 'Carnes',                        'dre-g-carnes'),
+                _row_titulo('4', 'OUTRAS RECEITAS OPERACIONAIS', bg='rgba(255,255,255,0.02)'),
+                _row_sub('4.1', 'Juros Recebidos',                'dre-or-juros'),
+                _row_sub('4.2', 'Aluguéis',                       'dre-or-alug'),
+                _row_sub('4.4', 'Outras Receitas',                'dre-or-outras'),
+                _row_sub('4.5', 'Rendimentos Fundos de Investimentos', 'dre-or-fundos'),
+                _row_sub('4.6', 'Bonificações Recebidas',         'dre-or-bonif'),
+                _row_resultado('1. RECEITA TOTAL', 'res-receita-total'),
+                _row_titulo('5', 'TOTAL COMPRA DE MERCADORIAS', color='#ff5c5c', bg='rgba(255,92,92,0.05)'),
+                _row_sub('5.1',  'Bebidas',                       'dre-c-bebidas'),
+                _row_sub('5.2',  'Bolos e Tortas',                'dre-c-bolos'),
+                _row_sub('5.3',  'Carnes',                        'dre-c-carnes'),
+                _row_sub('5.4',  'Cigarros',                      'dre-c-cigarros'),
+                _row_sub('5.5',  'Conveniência',                  'dre-c-conv'),
+                _row_sub('5.6',  'Estoque Cozinha',               'dre-c-estcoz'),
+                _row_sub('5.7',  'Picolés',                       'dre-c-picoles'),
+                _row_sub('5.8',  'Salgados Prontos',              'dre-c-salgados'),
+                _row_sub('5.9',  'Insumos',                       'dre-c-insumos'),
+                _row_sub('5.10', 'Embalagens',                    'dre-c-embal'),
+                _row_sub('5.11', 'Recarga Celular',               'dre-c-recarga'),
+                _row_sub('5.12', 'Bichos de Pelúcia e Brinquedos','dre-c-bichos'),
+                _row_sub('5.13', 'Buffet',                        'dre-c-buffet'),
+                _row_resultado('5. MARGEM DE CONTRIBUIÇÃO', 'res-margem', color='#3ddc84', bg='rgba(61,220,132,0.08)'),
+                _row_titulo('6', 'TOTAL CUSTOS FIXOS + VARIÁVEIS', color='#ff5c5c', bg='rgba(255,92,92,0.05)'),
+                _row_titulo('6.1', 'Custos Fixos', color='#ff8080', bg='rgba(255,92,92,0.03)', size='13px'),
+                _row_sub('6.1.1', 'Energia Elétrica',             'dre-cf-energia'),
+                _row_sub('6.1.2', 'Telefone',                     'dre-cf-tel'),
+                _row_sub('6.1.3', 'Água',                         'dre-cf-agua'),
+                _row_sub('6.1.4', 'IPTU',                         'dre-cf-iptu'),
+                _row_sub('6.1.5', 'Salários / Férias / Rescisões / 13º', 'dre-cf-sal'),
+                _row_sub('6.1.6', 'Encargos Sociais',             'dre-cf-enc'),
+                _row_sub('6.1.7', 'Impostos',                     'dre-cf-imp'),
+                _row_sub('6.1.8', 'Seguro de Vida — Funcionários','dre-cf-seg'),
+                _row_sub('6.1.9', 'Diárias',                      'dre-cf-diar'),
+                _row_titulo('6.2', 'Custos Variáveis', color='#ff8080', bg='rgba(255,92,92,0.03)', size='13px'),
+                _row_sub('6.2.1',  'Despesas com Sistemas',        'dre-cv-sist'),
+                _row_sub('6.2.2',  'Serviços de Terceiros',        'dre-cv-terc'),
+                _row_sub('6.2.3',  'Materiais de Expediente',      'dre-cv-exped'),
+                _row_sub('6.2.4',  'Honorários Contábeis',         'dre-cv-honor'),
+                _row_sub('6.2.5',  'Manutenção e Reposição',       'dre-cv-manut'),
+                _row_sub('6.2.6',  'Viagens e Estadias',           'dre-cv-viag'),
+                _row_sub('6.2.7',  'Taxas Diversas',               'dre-cv-taxas'),
+                _row_sub('6.2.8',  'Uniformes',                    'dre-cv-unif'),
+                _row_sub('6.2.9',  'Material de Limpeza',          'dre-cv-limp'),
+                _row_sub('6.2.10', 'Aluguéis e Locações',          'dre-cv-alug'),
+                _row_sub('6.2.11', 'Faltas e Sobras de Caixa',     'dre-cv-caixa'),
+                _row_sub('6.2.12', 'Juros de Mora',                'dre-cv-mora'),
+                _row_sub('6.2.13', 'Tarifas Bancárias',            'dre-cv-banco'),
+                _row_sub('6.2.14', 'Tarifas Cartões',              'dre-cv-cart'),
+                _row_sub('6.2.15', 'Brindes e Bonificações',       'dre-cv-brindes'),
+                _row_sub('6.2.16', 'Utensílios',                   'dre-cv-utens'),
+                _row_sub('6.2.17', 'Despesas com Veículos',        'dre-cv-veic'),
+                _row_sub('6.2.18', 'Seguros Edificações',          'dre-cv-segpred'),
+                _row_sub('6.2.19', 'Despesas Gerais',              'dre-cv-gerais'),
+                _row_sub('6.2.20', 'Gás GLP',                      'dre-cv-gas'),
+                _row_sub('6.2.21', 'Contagem Estoque',             'dre-cv-estoque'),
+                _row_sub('6.2.22', 'Comissões sobre Vendas',       'dre-cv-comiss'),
+                _row_resultado('7. LUCRO BRUTO DA EMPRESA',   'res-lucro-bruto', color='#3ddc84', bg='rgba(61,220,132,0.08)'),
+                _row_resultado('8. RESULTADO OPERACIONAL',    'res-operacional', color='#3ddc84', bg='rgba(61,220,132,0.06)'),
+                _row_resultado('9. RESULTADO LÍQUIDO',        'res-liquido',     color='#3ddc84', bg='rgba(61,220,132,0.12)'),
+                _row_titulo('10', 'FUNCIONÁRIOS & HORAS EXTRAS', color='#5c9eff', bg='rgba(92,158,255,0.06)'),
+                html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
+                    html.Td('  10.  Total de Funcionários', style={'padding':'10px 20px','fontSize':'13px','color':'#8fa894','fontFamily':"'Sora',sans-serif"}),
+                    html.Td(_campo('dre-func-total', placeholder='Nº funcionários', width='160px'), style={'padding':'6px 20px 6px 0','textAlign':'right'}),
+                ]),
+                html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
+                    html.Td('  11.  Total de Horas Extras', style={'padding':'10px 20px','fontSize':'13px','color':'#8fa894','fontFamily':"'Sora',sans-serif"}),
+                    html.Td(_campo('dre-he-qtd', placeholder='Total de horas', width='160px'), style={'padding':'6px 20px 6px 0','textAlign':'right'}),
+                ]),
+                html.Tr(style={'background':'rgba(92,158,255,0.05)','borderBottom':'2px solid rgba(92,158,255,0.15)'}, children=[
+                    html.Td('  12.  Valor Total de Horas Extras', style={'padding':'12px 20px','fontSize':'13px','fontWeight':'600','color':'#5c9eff','fontFamily':"'Sora',sans-serif"}),
+                    html.Td(style={'padding':'6px 20px 6px 0','textAlign':'right','display':'flex','gap':'8px','justifyContent':'flex-end'}, children=[
+                        _campo('dre-he-total', placeholder='R$ Valor total', width='160px'),
+                        dcc.Input(id='dre-he-pct', type='number', placeholder='%', debounce=True,
+                            style={'width':'80px','padding':'7px 10px','background':'#0d0f0e',
+                                'border':'1px solid rgba(92,158,255,0.3)','borderRadius':'6px',
+                                'color':'#5c9eff','fontFamily':"'Space Mono',monospace",
+                                'fontSize':'12px','textAlign':'right','outline':'none'}),
+                    ]),
+                ]),
+            ])]),
+        ]),
+    ])
 # ── INDEX STRING ──────────────────────────────────────────────────────────────
 app.index_string = '''<!DOCTYPE html>
 <html>
@@ -412,11 +777,13 @@ app.index_string = '''<!DOCTYPE html>
             .status-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:blink 2s ease-in-out infinite}
             .topbar-date{font-family:'Space Mono',monospace;font-size:10px;color:var(--text-dim);letter-spacing:1px}
             .main-content{padding:36px 40px;flex:1}
-            .upload-area{border:1px dashed rgba(61,220,132,0.2);border-radius:var(--r);background:var(--green-deep);padding:18px 24px;cursor:pointer;margin-bottom:32px;transition:border-color var(--t),background var(--t);display:flex;align-items:center;justify-content:center;gap:12px}
+            .upload-area{border:1px dashed rgba(61,220,132,0.2);border-radius:var(--r);background:var(--green-deep);padding:18px 24px;cursor:pointer;margin-bottom:32px;transition:border-color var(--t),background var(--t);display:flex;align-items:center;justify-content:space-between;gap:12px}
             .upload-area:hover{border-color:rgba(61,220,132,0.4);background:rgba(61,220,132,0.08)}
             .upload-icon{font-size:18px}
             .upload-text{font-size:13px;color:var(--text-mid);font-weight:400}
             .upload-text strong{color:var(--green);font-weight:600}
+            .upload-status{font-family:'Space Mono',monospace;font-size:10px;color:var(--text-dim);letter-spacing:1px;white-space:nowrap}
+            .upload-status.loaded{color:var(--green)}
             .section-header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:24px}
             .section-eyebrow{font-family:'Space Mono',monospace;font-size:9px;color:var(--green);text-transform:uppercase;letter-spacing:3px;margin-bottom:6px}
             .section-title{font-family:'Playfair Display',serif;font-size:24px;font-weight:700;color:var(--text);letter-spacing:-0.5px}
@@ -473,6 +840,8 @@ app.index_string = '''<!DOCTYPE html>
             .toggle.on::after{left:22px}
             .toggle.off::after{left:4px}
             tr:hover td{background:rgba(255,255,255,0.02)!important}
+            .csv-info{background:rgba(61,220,132,0.04);border:1px solid rgba(61,220,132,0.12);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-family:'Space Mono',monospace;font-size:10px;color:var(--text-dim);line-height:1.7}
+            .csv-info strong{color:var(--green)}
         </style>
     </head>
     <body>
@@ -484,10 +853,12 @@ app.index_string = '''<!DOCTYPE html>
 # ── LAYOUT ─────────────────────────────────────────────────────────────────────
 app.layout = html.Div([
     dcc.Store(id='auth-status', data=False),
-    dcc.Store(id='csv-store',   data=None),
+    dcc.Store(id='csv-store',   data={}),
+    dcc.Store(id='dre-store',   data={}),
     dcc.Store(id='active-tab',  data='tab-ind'),
     dcc.Interval(id='clock-tick', interval=60_000, n_intervals=0),
     dcc.Download(id='download-excel'),
+    dcc.Download(id='download-template'),
 
     # TOAST
     html.Div(id='toast', style={'display':'none'}),
@@ -579,9 +950,10 @@ app.layout = html.Div([
                 ]),
                 html.Div(className='sidebar-section', children=[
                     html.Div("Ferramentas", className='sidebar-section-label'),
-                    html.Div(id='nav-export', children=[html.Span("⬇️", className='nav-icon'), "Exportar Excel"], className='nav-item'),
-                    html.Div(id='nav-config', children=[html.Span("⚙️", className='nav-icon'), "Configurações"],  className='nav-item'),
-                    html.Div(id='nav-logout', children=[html.Span("🚪", className='nav-icon'), "Sair"],           className='nav-item'),
+                    html.Div(id='nav-export',   children=[html.Span("⬇️", className='nav-icon'), "Exportar Excel"],   className='nav-item'),
+                    html.Div(id='nav-template', children=[html.Span("📄", className='nav-icon'), "Baixar Template CSV"], className='nav-item'),
+                    html.Div(id='nav-config',   children=[html.Span("⚙️", className='nav-icon'), "Configurações"],      className='nav-item'),
+                    html.Div(id='nav-logout',   children=[html.Span("🚪", className='nav-icon'), "Sair"],               className='nav-item'),
                 ]),
                 html.Div(className='sidebar-bottom', children=[
                     html.Div(className='sidebar-user', children=[
@@ -607,6 +979,9 @@ app.layout = html.Div([
                     ]),
                 ]),
                 html.Div(id='main-content', className='main-content'),
+                # DRE Tab — always in DOM, visibility controlled by callback
+                html.Div(id='dre-tab-wrapper', className='main-content',
+                         style={'display':'none'}, children=[_build_dre_tab()]),
             ]),
         ]),
     ]),
@@ -648,7 +1023,7 @@ def do_logout(_):
 def update_clock(_):
     return datetime.datetime.now().strftime('%d/%m/%Y  %H:%M')
 
-# NAVEGAÇÃO SIDEBAR
+# NAVEGAÇÃO SIDEBAR + redirecionamento após upload CSV
 @app.callback(
     Output('active-tab','data'),
     Output('nav-ind','className'),
@@ -657,14 +1032,30 @@ def update_clock(_):
     Output('nav-txn','className'),
     Output('topbar-title','children'),
     Output('topbar-subtitle','children'),
+    Output('main-content','style'),
+    Output('dre-tab-wrapper','style'),
     Input('nav-ind','n_clicks'),
     Input('nav-charts','n_clicks'),
     Input('nav-dre','n_clicks'),
     Input('nav-txn','n_clicks'),
+    Input('csv-store','data'),
     prevent_initial_call=True,
 )
-def nav_click(n1, n2, n3, n4):
+def nav_click(n1, n2, n3, n4, csv_data):
     triggered = ctx.triggered_id
+    show  = {'display':'block'}
+    hide  = {'display':'none'}
+
+    # Quando CSV é importado → força aba DRE
+    if triggered == 'csv-store':
+        if not csv_data:
+            raise dash.exceptions.PreventUpdate
+        cls_map = {'nav-ind':'nav-item','nav-charts':'nav-item','nav-dre':'nav-item active','nav-txn':'nav-item'}
+        return ('tab-dre',
+                cls_map['nav-ind'], cls_map['nav-charts'], cls_map['nav-dre'], cls_map['nav-txn'],
+                'DRE Completo', 'CSV importado · campos preenchidos automaticamente',
+                hide, show)
+
     tabs = {
         'nav-ind':    ('tab-ind',    'Indicadores & KPIs',  'Métricas estratégicas · Exercício 2025'),
         'nav-charts': ('tab-charts', 'Análise Gráfica',     'Visualização de dados financeiros'),
@@ -673,7 +1064,8 @@ def nav_click(n1, n2, n3, n4):
     }
     tab, title, sub = tabs.get(triggered, ('tab-ind','Dashboard',''))
     cls = {k: 'nav-item active' if k == triggered else 'nav-item' for k in tabs}
-    return tab, cls['nav-ind'], cls['nav-charts'], cls['nav-dre'], cls['nav-txn'], title, sub
+    is_dre = tab == 'tab-dre'
+    return tab, cls['nav-ind'], cls['nav-charts'], cls['nav-dre'], cls['nav-txn'], title, sub,            hide if is_dre else show, show if is_dre else hide
 
 # MODAL CONFIGURAÇÕES
 @app.callback(
@@ -699,11 +1091,11 @@ def _t3(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 @app.callback(Output('toggle-auto','className'), Input('toggle-auto','n_clicks'), State('toggle-auto','className'), prevent_initial_call=True)
 def _t4(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 
-# EXPORTAR EXCEL (sidebar) — só dispara com clique real em nav-export
+# EXPORTAR EXCEL
 @app.callback(
     Output('download-excel','data'),
-    Output('toast','children'),
-    Output('toast','style'),
+    Output('toast','children', allow_duplicate=True),
+    Output('toast','style', allow_duplicate=True),
     Input('nav-export','n_clicks'),
     prevent_initial_call=True,
 )
@@ -719,20 +1111,175 @@ def export_excel(n):
     ], className='toast')
     return dcc.send_bytes(data, fname), toast, {'display':'block'}
 
-# HORAS EXTRAS — cálculo automático
+# BAIXAR TEMPLATE CSV
 @app.callback(
-    Output('dre-he-result',        'children'),
-    Output('dre-he-total-display', 'children'),
-    Input('dre-he-qtd',   'value'),
-    Input('dre-he-valor', 'value'),
+    Output('download-template','data'),
+    Output('toast','children', allow_duplicate=True),
+    Output('toast','style', allow_duplicate=True),
+    Input('nav-template','n_clicks'),
+    prevent_initial_call=True,
+)
+def download_template(n):
+    if not n or n < 1:
+        raise dash.exceptions.PreventUpdate
+    csv_bytes = gerar_template_csv()
+    fname = "GUAPO_DRE_template.csv"
+    toast = html.Div([
+        html.Span("📄", style={'fontSize':'16px'}),
+        html.Span(f" Template CSV baixado — preencha e importe no DRE",
+                  style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}),
+    ], className='toast')
+    return dcc.send_bytes(csv_bytes, fname), toast, {'display':'block'}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UPLOAD CSV → CSV-STORE (parse e valida)
+# ══════════════════════════════════════════════════════════════════════════════
+@app.callback(
+    Output('csv-store', 'data'),
+    Output('toast', 'children', allow_duplicate=True),
+    Output('toast', 'style', allow_duplicate=True),
+    Input('upload-data', 'contents'),
+    State('upload-data', 'filename'),
+    prevent_initial_call=True,
+)
+def parse_upload(contents, filename):
+    if not contents:
+        raise dash.exceptions.PreventUpdate
+
+    _, content_string = contents.split(',')
+    try:
+        decoded = base64.b64decode(content_string).decode('utf-8')
+    except Exception:
+        decoded = base64.b64decode(content_string).decode('latin-1')
+
+    result, n_campos = parse_csv_to_dre(decoded)
+
+    if not result:
+        toast = html.Div([
+            html.Span("⚠", style={'color':'#ff5c5c','fontWeight':'700','fontSize':'16px'}),
+            html.Span(
+                " Nenhum campo reconhecido — baixe o template CSV para ver o formato correto",
+                style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'},
+            ),
+        ], className='toast')
+        return dash.no_update, toast, {'display':'block'}
+
+    fname = filename or "arquivo.csv"
+    toast = html.Div([
+        html.Span("✓", style={'color':'#3ddc84','fontWeight':'700','fontSize':'16px'}),
+        html.Span(
+            f" {fname} importado · {n_campos} campos preenchidos no DRE",
+            style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'},
+        ),
+    ], className='toast')
+    return result, toast, {'display':'block'}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CSV-STORE → PREENCHE CAMPOS DO DRE
+# ══════════════════════════════════════════════════════════════════════════════
+_ALL_DRE_FIELD_IDS = [
+    'dre-venda-vista','dre-venda-prazo',
+    'dre-g-bolos','dre-g-buffet','dre-g-cafes','dre-g-lanches','dre-g-porcoes',
+    'dre-g-salgados','dre-g-drinks','dre-g-conv','dre-g-cigarros','dre-g-bebidas',
+    'dre-g-picole','dre-g-estcoz','dre-g-bichos','dre-g-carnes',
+    'dre-or-juros','dre-or-alug','dre-or-outras','dre-or-fundos','dre-or-bonif',
+    'dre-c-bebidas','dre-c-bolos','dre-c-carnes','dre-c-cigarros','dre-c-conv',
+    'dre-c-estcoz','dre-c-picoles','dre-c-salgados','dre-c-insumos','dre-c-embal',
+    'dre-c-recarga','dre-c-bichos','dre-c-buffet',
+    'dre-cf-energia','dre-cf-tel','dre-cf-agua','dre-cf-iptu','dre-cf-sal',
+    'dre-cf-enc','dre-cf-imp','dre-cf-seg','dre-cf-diar',
+    'dre-cv-sist','dre-cv-terc','dre-cv-exped','dre-cv-honor','dre-cv-manut',
+    'dre-cv-viag','dre-cv-taxas','dre-cv-unif','dre-cv-limp','dre-cv-alug',
+    'dre-cv-caixa','dre-cv-mora','dre-cv-banco','dre-cv-cart','dre-cv-brindes',
+    'dre-cv-utens','dre-cv-veic','dre-cv-segpred','dre-cv-gerais','dre-cv-gas',
+    'dre-cv-estoque','dre-cv-comiss',
+]
+
+# Mapeia field_id → canonical key (remove prefixo 'dre-' e troca '-' por '_')
+def _field_id_to_key(fid):
+    return fid.replace('dre-', '').replace('-', '_')
+
+@app.callback(
+    [Output(fid, 'value') for fid in _ALL_DRE_FIELD_IDS],
+    Input('csv-store', 'data'),
+    prevent_initial_call=True,
+)
+def fill_dre_from_csv(csv_data):
+    # Campos agora sempre existem no DOM — preenche direto
+    if not csv_data:
+        raise dash.exceptions.PreventUpdate
+    results = []
+    for fid in _ALL_DRE_FIELD_IDS:
+        key = _field_id_to_key(fid)
+        val = csv_data.get(key)
+        results.append(val if val is not None and val != 0 else None)
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DRE STORE — salva todos os valores do DRE a cada mudança
+# ══════════════════════════════════════════════════════════════════════════════
+@app.callback(
+    Output('dre-store', 'data'),
+    # Receitas
+    Input('dre-venda-vista','value'), Input('dre-venda-prazo','value'),
+    Input('dre-or-juros','value'),    Input('dre-or-alug','value'),
+    Input('dre-or-outras','value'),   Input('dre-or-fundos','value'),
+    Input('dre-or-bonif','value'),
+    # Vendas por grupo
+    Input('dre-g-bolos','value'),  Input('dre-g-buffet','value'),
+    Input('dre-g-cafes','value'),  Input('dre-g-lanches','value'),
+    Input('dre-g-porcoes','value'),Input('dre-g-salgados','value'),
+    Input('dre-g-drinks','value'), Input('dre-g-conv','value'),
+    Input('dre-g-cigarros','value'),Input('dre-g-bebidas','value'),
+    Input('dre-g-picole','value'), Input('dre-g-estcoz','value'),
+    Input('dre-g-bichos','value'), Input('dre-g-carnes','value'),
+    # Compras
+    Input('dre-c-bebidas','value'),  Input('dre-c-bolos','value'),
+    Input('dre-c-carnes','value'),   Input('dre-c-cigarros','value'),
+    Input('dre-c-conv','value'),     Input('dre-c-estcoz','value'),
+    Input('dre-c-picoles','value'),  Input('dre-c-salgados','value'),
+    Input('dre-c-insumos','value'),  Input('dre-c-embal','value'),
+    Input('dre-c-recarga','value'),  Input('dre-c-bichos','value'),
+    Input('dre-c-buffet','value'),
+    # Custos Fixos
+    Input('dre-cf-energia','value'), Input('dre-cf-tel','value'),
+    Input('dre-cf-agua','value'),    Input('dre-cf-iptu','value'),
+    Input('dre-cf-sal','value'),     Input('dre-cf-enc','value'),
+    Input('dre-cf-imp','value'),     Input('dre-cf-seg','value'),
+    Input('dre-cf-diar','value'),
+    # Custos Variáveis
+    Input('dre-cv-sist','value'),    Input('dre-cv-terc','value'),
+    Input('dre-cv-exped','value'),   Input('dre-cv-honor','value'),
+    Input('dre-cv-manut','value'),   Input('dre-cv-viag','value'),
+    Input('dre-cv-taxas','value'),   Input('dre-cv-unif','value'),
+    Input('dre-cv-limp','value'),    Input('dre-cv-alug','value'),
+    Input('dre-cv-caixa','value'),   Input('dre-cv-mora','value'),
+    Input('dre-cv-banco','value'),   Input('dre-cv-cart','value'),
+    Input('dre-cv-brindes','value'), Input('dre-cv-utens','value'),
+    Input('dre-cv-veic','value'),    Input('dre-cv-segpred','value'),
+    Input('dre-cv-gerais','value'),  Input('dre-cv-gas','value'),
+    Input('dre-cv-estoque','value'), Input('dre-cv-comiss','value'),
     prevent_initial_call=False,
 )
-def calc_horas_extras(qtd, valor):
-    if qtd and valor:
-        total = float(qtd) * float(valor)
-        fmt = f"R$ {total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-        return fmt, fmt
-    return 'R$ —', 'R$ —'
+def save_dre_store(*vals):
+    keys = [
+        'venda_vista','venda_prazo',
+        'or_juros','or_alug','or_outras','or_fundos','or_bonif',
+        'g_bolos','g_buffet','g_cafes','g_lanches','g_porcoes','g_salgados',
+        'g_drinks','g_conv','g_cigarros','g_bebidas','g_picole','g_estcoz','g_bichos','g_carnes',
+        'c_bebidas','c_bolos','c_carnes','c_cigarros','c_conv','c_estcoz',
+        'c_picoles','c_salgados','c_insumos','c_embal','c_recarga','c_bichos','c_buffet',
+        'cf_energia','cf_tel','cf_agua','cf_iptu','cf_sal','cf_enc','cf_imp','cf_seg','cf_diar',
+        'cv_sist','cv_terc','cv_exped','cv_honor','cv_manut','cv_viag','cv_taxas','cv_unif',
+        'cv_limp','cv_alug','cv_caixa','cv_mora','cv_banco','cv_cart','cv_brindes','cv_utens',
+        'cv_veic','cv_segpred','cv_gerais','cv_gas','cv_estoque','cv_comiss',
+    ]
+    return {k: (float(v) if v else 0.0) for k, v in zip(keys, vals)}
+
+def _v(d, *keys):
+    return sum(d.get(k, 0.0) for k in keys)
 
 # DRE — RECEITA TOTAL
 @app.callback(
@@ -807,20 +1354,189 @@ def calc_resultados(*vals):
     return fmt(lucro_bruto), fmt(operacional), fmt(liquido)
 
 
-# UPLOAD CSV
+# GRÁFICO 1 — DÉBITOS
 @app.callback(
-    Output('csv-store','data'),
-    Input('upload-data','contents'),
-    State('upload-data','filename'),
-    prevent_initial_call=True,
+    Output('fig-debitos', 'figure'),
+    Input('dre-store', 'data'),
 )
-def parse_upload(contents, filename):
-    if not contents:
-        raise dash.exceptions.PreventUpdate
-    _, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string).decode('utf-8')
-    rows = [line.split(',') for line in decoded.strip().split('\n')]
-    return {'filename': filename, 'rows': rows}
+def fig_debitos(d):
+    if not d: d = {}
+    cf_items = {
+        'Energia Elétrica': d.get('cf_energia',0), 'Telefone': d.get('cf_tel',0),
+        'Água': d.get('cf_agua',0), 'IPTU': d.get('cf_iptu',0),
+        'Salários/13º/Férias': d.get('cf_sal',0), 'Encargos Sociais': d.get('cf_enc',0),
+        'Impostos': d.get('cf_imp',0), 'Seguro Vida': d.get('cf_seg',0),
+        'Diárias': d.get('cf_diar',0),
+    }
+    cv_items = {
+        'Sistemas': d.get('cv_sist',0), 'Serv. Terceiros': d.get('cv_terc',0),
+        'Expediente': d.get('cv_exped',0), 'Honorários': d.get('cv_honor',0),
+        'Manutenção': d.get('cv_manut',0), 'Viagens': d.get('cv_viag',0),
+        'Taxas': d.get('cv_taxas',0), 'Uniformes': d.get('cv_unif',0),
+        'Limpeza': d.get('cv_limp',0), 'Aluguéis': d.get('cv_alug',0),
+        'Caixa': d.get('cv_caixa',0), 'Juros Mora': d.get('cv_mora',0),
+        'Tarifas Banco': d.get('cv_banco',0), 'Tarifas Cartão': d.get('cv_cart',0),
+        'Brindes': d.get('cv_brindes',0), 'Utensílios': d.get('cv_utens',0),
+        'Veículos': d.get('cv_veic',0), 'Seg. Edificações': d.get('cv_segpred',0),
+        'Desp. Gerais': d.get('cv_gerais',0), 'Gás GLP': d.get('cv_gas',0),
+        'Estoque': d.get('cv_estoque',0), 'Comissões': d.get('cv_comiss',0),
+    }
+    compras_items = {
+        'Bebidas': d.get('c_bebidas',0), 'Bolos/Tortas': d.get('c_bolos',0),
+        'Carnes': d.get('c_carnes',0), 'Cigarros': d.get('c_cigarros',0),
+        'Conveniência': d.get('c_conv',0), 'Est. Cozinha': d.get('c_estcoz',0),
+        'Picolés': d.get('c_picoles',0), 'Salgados': d.get('c_salgados',0),
+        'Insumos': d.get('c_insumos',0), 'Embalagens': d.get('c_embal',0),
+        'Recarga': d.get('c_recarga',0), 'Bichos/Brinq.': d.get('c_bichos',0),
+        'Buffet': d.get('c_buffet',0),
+    }
+
+    total_cf    = sum(cf_items.values())
+    total_cv    = sum(cv_items.values())
+    total_deb   = total_cf + total_cv
+    total_comp  = sum(compras_items.values())
+    total_geral = total_deb + total_comp
+
+    fig = go.Figure()
+    for nome, val in cf_items.items():
+        if val > 0:
+            fig.add_trace(go.Bar(name=nome, x=['Custos Fixos'], y=[val],
+                marker_color='rgba(255,92,92,0.75)', marker_line_width=0,
+                legendgroup='cf', showlegend=True,
+                hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+    for nome, val in cv_items.items():
+        if val > 0:
+            fig.add_trace(go.Bar(name=nome, x=['Custos Variáveis'], y=[val],
+                marker_color='rgba(255,150,50,0.75)', marker_line_width=0,
+                legendgroup='cv', showlegend=True,
+                hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+    fig.add_trace(go.Bar(name='Total Débitos', x=['Total Débitos'], y=[total_deb],
+        marker_color='rgba(255,92,92,0.9)', marker_line_width=0, showlegend=False,
+        hovertemplate='<b>Total Débitos</b><br>R$ %{y:,.2f}<extra></extra>'))
+    for nome, val in compras_items.items():
+        if val > 0:
+            fig.add_trace(go.Bar(name=nome, x=['Compras Mercadorias'], y=[val],
+                marker_color='rgba(201,168,76,0.75)', marker_line_width=0,
+                legendgroup='comp', showlegend=True,
+                hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+    fig.add_trace(go.Bar(name='Total Geral', x=['Total Geral'], y=[total_geral],
+        marker_color='rgba(92,158,255,0.9)', marker_line_width=0, showlegend=False,
+        hovertemplate='<b>Total Geral</b><br>R$ %{y:,.2f}<extra></extra>'))
+
+    layout = dict(CHART_LAYOUT)
+    layout['barmode'] = 'stack'
+    layout['margin']  = dict(l=16, r=16, t=16, b=80)
+    layout['showlegend'] = False
+    layout['xaxis'] = dict(gridcolor='rgba(255,255,255,0.04)',
+                            tickfont=dict(size=11, color='#e8ede9', family='Sora'))
+    fig.update_layout(**layout)
+    for label, val in [('Custos Fixos', total_cf), ('Custos Variáveis', total_cv),
+                        ('Total Débitos', total_deb), ('Compras Mercadorias', total_comp),
+                        ('Total Geral', total_geral)]:
+        if val > 0:
+            fig.add_annotation(x=label, y=val,
+                text=f"R$ {val:,.0f}".replace(',','X').replace('.', ',').replace('X','.'),
+                showarrow=False, yshift=10,
+                font=dict(size=11, color='#e8ede9', family='Space Mono'))
+    return fig
+
+# GRÁFICO 2 — RECEITAS
+@app.callback(
+    Output('fig-receitas', 'figure'),
+    Input('dre-store', 'data'),
+)
+def fig_receitas(d):
+    if not d: d = {}
+    vendas_merc  = {'Vendas à Vista': d.get('venda_vista',0), 'Vendas a Prazo': d.get('venda_prazo',0)}
+    vendas_grupo = {
+        'Bolos e Tortas': d.get('g_bolos',0), 'Buffet': d.get('g_buffet',0),
+        'Cafés e Sucos': d.get('g_cafes',0), 'Lanches': d.get('g_lanches',0),
+        'Porções': d.get('g_porcoes',0), 'Salgados': d.get('g_salgados',0),
+        'Drinks': d.get('g_drinks',0), 'Conveniência': d.get('g_conv',0),
+        'Cigarros': d.get('g_cigarros',0), 'Bebidas': d.get('g_bebidas',0),
+        'Picolé': d.get('g_picole',0), 'Est. Cozinha': d.get('g_estcoz',0),
+        'Bichos/Brinq.': d.get('g_bichos',0), 'Carnes': d.get('g_carnes',0),
+    }
+    outras_rec = {
+        'Juros Recebidos': d.get('or_juros',0), 'Aluguéis': d.get('or_alug',0),
+        'Outras Receitas': d.get('or_outras',0), 'Fundos Invest.': d.get('or_fundos',0),
+        'Bonificações': d.get('or_bonif',0),
+    }
+    total_merc   = sum(vendas_merc.values())
+    total_grupo  = sum(vendas_grupo.values())
+    total_outras = sum(outras_rec.values())
+    total_rec    = total_merc + total_grupo + total_outras
+
+    fig = go.Figure()
+    for nome, val in vendas_merc.items():
+        if val > 0:
+            fig.add_trace(go.Bar(name=nome, x=['Vendas Mercadorias'], y=[val],
+                marker_color='rgba(61,220,132,0.8)', marker_line_width=0,
+                legendgroup='merc', showlegend=True,
+                hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+    for nome, val in vendas_grupo.items():
+        if val > 0:
+            fig.add_trace(go.Bar(name=nome, x=['Vendas por Grupo'], y=[val],
+                marker_color='rgba(61,180,100,0.75)', marker_line_width=0,
+                legendgroup='grupo', showlegend=True,
+                hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+    for nome, val in outras_rec.items():
+        if val > 0:
+            fig.add_trace(go.Bar(name=nome, x=['Outras Receitas'], y=[val],
+                marker_color='rgba(92,158,255,0.8)', marker_line_width=0,
+                legendgroup='outras', showlegend=True,
+                hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+    fig.add_trace(go.Bar(name='Receita Total', x=['Receita Total'], y=[total_rec],
+        marker_color='rgba(61,220,132,0.95)', marker_line_width=0, showlegend=False,
+        hovertemplate='<b>Receita Total</b><br>R$ %{y:,.2f}<extra></extra>'))
+
+    layout = dict(CHART_LAYOUT)
+    layout['barmode']    = 'stack'
+    layout['margin']     = dict(l=16, r=16, t=16, b=80)
+    layout['showlegend'] = False
+    layout['xaxis'] = dict(gridcolor='rgba(255,255,255,0.04)',
+                            tickfont=dict(size=11, color='#e8ede9', family='Sora'))
+    fig.update_layout(**layout)
+    for label, val in [('Vendas Mercadorias', total_merc), ('Vendas por Grupo', total_grupo),
+                        ('Outras Receitas', total_outras), ('Receita Total', total_rec)]:
+        if val > 0:
+            fig.add_annotation(x=label, y=val,
+                text=f"R$ {val:,.0f}".replace(',','X').replace('.', ',').replace('X','.'),
+                showarrow=False, yshift=10,
+                font=dict(size=11, color='#e8ede9', family='Space Mono'))
+    return fig
+
+
+# ATUALIZA STATUS DO UPLOAD E BANNER DO CSV
+@app.callback(
+    Output('upload-status-text','children'),
+    Output('upload-status-text','className'),
+    Output('csv-banner','children'),
+    Output('csv-banner','style'),
+    Input('csv-store','data'),
+    prevent_initial_call=False,
+)
+def update_csv_banner(csv_data):
+    if not csv_data:
+        status_text = "AGUARDANDO CSV"
+        status_cls  = "upload-status"
+        banner_children = [
+            html.Div([html.Strong("Como importar via CSV: "), "Baixe o template em ",
+                      html.Strong("Baixar Template CSV"), " na barra lateral, preencha e importe."]),
+            html.Div([html.Strong("Formato: "), "duas colunas — ", html.Strong("campo"),
+                      " e ", html.Strong("valor"), " (vírgula ou ponto-e-vírgula)."]),
+        ]
+        banner_style = {}
+    else:
+        n = len(csv_data)
+        status_text = "✓ CSV CARREGADO"
+        status_cls  = "upload-status loaded"
+        banner_children = [html.Div([
+            html.Strong(f"✓ CSV importado · {n} campos preenchidos — "),
+            "você pode editar qualquer valor manualmente.",
+        ])]
+        banner_style = {'borderColor':'rgba(61,220,132,0.3)','background':'rgba(61,220,132,0.06)'}
+    return status_text, status_cls, banner_children, banner_style
 
 # ── FUNÇÕES DE GRÁFICOS ────────────────────────────────────────────────────────
 def make_fig_main():
@@ -876,18 +1592,31 @@ def make_fig_acum():
     Output('main-content','children'),
     Input('active-tab','data'),
     Input('csv-store','data'),
+    Input('dre-store','data'),
 )
-def render_content(tab, csv_data):
+def render_content(tab, csv_data, dre_data):
+    if dre_data is None: dre_data = {}
+    csv_loaded = bool(csv_data)
+    csv_fname  = csv_data.get('_filename', '') if isinstance(csv_data, dict) else ''
 
     upload_bar = dcc.Upload(
         id='upload-data',
-        children=html.Div([
-            html.Span("⬆", className='upload-icon'),
-            html.Span(["Arraste ou clique para importar o ",
-                       html.Strong("DRE (.csv)"),
-                       " — dados atualizados automaticamente"], className='upload-text'),
+        children=html.Div(style={'display':'flex','alignItems':'center','justifyContent':'space-between','width':'100%','gap':'16px'}, children=[
+            html.Div(style={'display':'flex','alignItems':'center','gap':'12px'}, children=[
+                html.Span("⬆", className='upload-icon'),
+                html.Span([
+                    "Arraste ou clique para importar o ",
+                    html.Strong("DRE (.csv)"),
+                    " — campos preenchidos automaticamente"
+                ], className='upload-text'),
+            ]),
+            html.Div(
+                "✓ CSV CARREGADO" if csv_loaded else "AGUARDANDO CSV",
+                className=f"upload-status {'loaded' if csv_loaded else ''}",
+            ),
         ]),
         className='upload-area',
+        multiple=False,
     )
 
     # ── INDICADORES ────────────────────────────────────────────────────────────
@@ -950,246 +1679,31 @@ def render_content(tab, csv_data):
             html.Div(className='section-header', children=[
                 html.Div([
                     html.Div("Visualização de Dados", className='section-eyebrow'),
-                    html.Div("Análise Gráfica 2025", className='section-title'),
+                    html.Div("Análise Gráfica — DRE", className='section-title'),
                 ]),
-            ]),
-            html.Div(className='charts-grid-2', children=[
-                chart_card("Receita & Resultado", "Evolução Mensal Completa", make_fig_bar(), 300),
-                chart_card("Composição de Despesas", "Por Categoria", make_fig_pie(), 300),
-            ]),
-            html.Div(className='charts-grid-2', children=[
-                chart_card("Tendência de Margem", "Margem Líquida % por Mês", make_fig_margin(), 260),
-                chart_card("Lucro Acumulado", "Acumulado do Exercício 2025", make_fig_acum(), 260),
-            ]),
-        ])
-
-    # ── DRE ────────────────────────────────────────────────────────────────────
-    elif tab == 'tab-dre':
-
-        # helpers
-        def campo(field_id, placeholder='0,00', width='140px'):
-            return dcc.Input(
-                id=field_id, type='number', placeholder=placeholder,
-                debounce=True,
-                style={
-                    'width': width, 'padding': '7px 10px',
-                    'background': '#0d0f0e', 'border': '1px solid rgba(255,255,255,0.1)',
-                    'borderRadius': '6px', 'color': '#e8ede9',
-                    'fontFamily': "'Space Mono',monospace", 'fontSize': '12px',
-                    'textAlign': 'right', 'outline': 'none',
-                }
-            )
-
-        def row_titulo(num, label, color='#3ddc84', bg='rgba(61,220,132,0.07)', size='14px'):
-            return html.Tr(style={'background': bg, 'borderBottom': '1px solid rgba(255,255,255,0.08)'}, children=[
-                html.Td(f'{num}. {label}', colSpan=2, style={
-                    'padding': '13px 20px', 'fontWeight': '700',
-                    'fontSize': size, 'color': color,
-                    'fontFamily': "'Sora',sans-serif", 'letterSpacing': '0.3px',
-                }),
-            ])
-
-        def row_sub(num, label, field_id):
-            return html.Tr(style={'borderBottom': '1px solid rgba(255,255,255,0.04)'}, children=[
-                html.Td(f'  {num}  {label}', style={
-                    'padding': '10px 20px', 'fontSize': '13px',
-                    'color': '#8fa894', 'fontFamily': "'Sora',sans-serif",
-                }),
-                html.Td(campo(field_id), style={'padding': '6px 20px 6px 0', 'textAlign': 'right'}),
-            ])
-
-        def row_resultado(label, result_id, color='#e8c97a', bg='rgba(201,168,76,0.06)'):
-            return html.Tr(style={'background': bg, 'borderTop': '2px solid rgba(255,255,255,0.1)', 'borderBottom': '1px solid rgba(255,255,255,0.08)'}, children=[
-                html.Td(label, style={
-                    'padding': '13px 20px', 'fontWeight': '700',
-                    'fontSize': '14px', 'color': color,
-                    'fontFamily': "'Sora',sans-serif",
-                }),
-                html.Td(id=result_id, children='—', style={
-                    'padding': '13px 20px', 'textAlign': 'right',
-                    'fontWeight': '700', 'fontSize': '14px', 'color': color,
-                    'fontFamily': "'Space Mono',monospace",
-                }),
-            ])
-
-        return html.Div([
-            upload_bar,
-            html.Div(className='section-header', children=[
-                html.Div([
-                    html.Div("Demonstração do Resultado", className='section-eyebrow'),
-                    html.Div("DRE — Lançamento de Dados", className='section-title'),
-                ]),
-                html.Div("Preencha os valores e os resultados serão calculados automaticamente",
+                html.Div("Preencha o DRE ou importe um CSV para atualizar os gráficos",
                          style={'fontSize':'12px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
             ]),
-
-            html.Div(className='dre-card', children=[
-                html.Div(className='dre-card-header', children=[
-                    html.Div(["DRE · ", html.Span("Entrada de Dados")], className='dre-card-title'),
-                    html.Div("Valores em R$", className='dre-pill'),
+            html.Div(style={'marginBottom':'24px'}, children=[
+                html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
+                    html.Div(style={'padding':'16px 22px 12px','borderBottom':'1px solid rgba(255,255,255,0.06)','background':'#1a1f1c'}, children=[
+                        html.Div("ESTRUTURA DE CUSTOS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#ff5c5c','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'3px'}),
+                        html.Div("Custos Fixos + Variáveis = Total Débitos → + Compras = Total Geral", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
+                    ]),
+                    dcc.Graph(id='fig-debitos', config={'displayModeBar':False}, style={'height':'340px'}),
                 ]),
-
-                html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[html.Tbody([
-
-                    # ── 1. RECEITA TOTAL ──────────────────────────────────────
-                    row_titulo('1', 'RECEITA TOTAL', color='#3ddc84', bg='rgba(61,220,132,0.1)'),
-
-                    # ── 2. VENDAS DE MERCADORIAS ──────────────────────────────
-                    row_titulo('2', 'RECEITA — VENDAS DE MERCADORIAS', bg='rgba(61,220,132,0.05)'),
-                    row_sub('2.1', 'Vendas à Vista',  'dre-venda-vista'),
-                    row_sub('2.2', 'Vendas a Prazo',  'dre-venda-prazo'),
-
-                    # ── 3. VENDAS POR GRUPOS ──────────────────────────────────
-                    row_titulo('3', 'VENDAS POR GRUPOS', bg='rgba(255,255,255,0.02)'),
-                    row_sub('3.1',  'Bolos e Tortas',                'dre-g-bolos'),
-                    row_sub('3.2',  'Buffet',                        'dre-g-buffet'),
-                    row_sub('3.3',  'Cafés e Sucos',                 'dre-g-cafes'),
-                    row_sub('3.4',  'Lanches',                       'dre-g-lanches'),
-                    row_sub('3.5',  'Porções',                       'dre-g-porcoes'),
-                    row_sub('3.6',  'Salgados Prontos',              'dre-g-salgados'),
-                    row_sub('3.7',  'Drinks',                        'dre-g-drinks'),
-                    row_sub('3.8',  'Conveniência',                  'dre-g-conv'),
-                    row_sub('3.9',  'Cigarros',                      'dre-g-cigarros'),
-                    row_sub('3.10', 'Bebidas',                       'dre-g-bebidas'),
-                    row_sub('3.11', 'Picolé',                        'dre-g-picole'),
-                    row_sub('3.12', 'Estoque Cozinha',               'dre-g-estcoz'),
-                    row_sub('3.13', 'Bichos de Pelúcia e Brinquedos','dre-g-bichos'),
-                    row_sub('3.14', 'Carnes',                        'dre-g-carnes'),
-
-                    # ── 4. OUTRAS RECEITAS ────────────────────────────────────
-                    row_titulo('4', 'OUTRAS RECEITAS OPERACIONAIS', bg='rgba(255,255,255,0.02)'),
-                    row_sub('4.1', 'Juros Recebidos',                'dre-or-juros'),
-                    row_sub('4.2', 'Aluguéis',                       'dre-or-alug'),
-                    row_sub('4.4', 'Outras Receitas',                'dre-or-outras'),
-                    row_sub('4.5', 'Rendimentos Fundos de Investimentos', 'dre-or-fundos'),
-                    row_sub('4.6', 'Bonificações Recebidas',         'dre-or-bonif'),
-
-                    # ── RESULTADO: RECEITA TOTAL ──────────────────────────────
-                    row_resultado('1. RECEITA TOTAL', 'res-receita-total'),
-
-                    # ── 5. COMPRAS DE MERCADORIAS ─────────────────────────────
-                    row_titulo('5', 'TOTAL COMPRA DE MERCADORIAS', color='#ff5c5c', bg='rgba(255,92,92,0.05)'),
-                    row_sub('5.1',  'Bebidas',                       'dre-c-bebidas'),
-                    row_sub('5.2',  'Bolos e Tortas',                'dre-c-bolos'),
-                    row_sub('5.3',  'Carnes',                        'dre-c-carnes'),
-                    row_sub('5.4',  'Cigarros',                      'dre-c-cigarros'),
-                    row_sub('5.5',  'Conveniência',                  'dre-c-conv'),
-                    row_sub('5.6',  'Estoque Cozinha',               'dre-c-estcoz'),
-                    row_sub('5.7',  'Picolés',                       'dre-c-picoles'),
-                    row_sub('5.8',  'Salgados Prontos',              'dre-c-salgados'),
-                    row_sub('5.9',  'Insumos',                       'dre-c-insumos'),
-                    row_sub('5.10', 'Embalagens',                    'dre-c-embal'),
-                    row_sub('5.11', 'Recarga Celular',               'dre-c-recarga'),
-                    row_sub('5.12', 'Bichos de Pelúcia e Brinquedos','dre-c-bichos'),
-                    row_sub('5.13', 'Buffet',                        'dre-c-buffet'),
-
-                    # ── RESULTADO: MARGEM DE CONTRIBUIÇÃO ────────────────────
-                    row_resultado('5. MARGEM DE CONTRIBUIÇÃO', 'res-margem', color='#3ddc84', bg='rgba(61,220,132,0.08)'),
-
-                    # ── 6.1 CUSTOS FIXOS ──────────────────────────────────────
-                    row_titulo('6', 'TOTAL CUSTOS FIXOS + VARIÁVEIS', color='#ff5c5c', bg='rgba(255,92,92,0.05)'),
-                    row_titulo('6.1', 'Custos Fixos', color='#ff8080', bg='rgba(255,92,92,0.03)', size='13px'),
-                    row_sub('6.1.1', 'Energia Elétrica',             'dre-cf-energia'),
-                    row_sub('6.1.2', 'Telefone',                     'dre-cf-tel'),
-                    row_sub('6.1.3', 'Água',                         'dre-cf-agua'),
-                    row_sub('6.1.4', 'IPTU',                         'dre-cf-iptu'),
-                    row_sub('6.1.5', 'Salários / Férias / Rescisões / 13º', 'dre-cf-sal'),
-                    row_sub('6.1.6', 'Encargos Sociais',             'dre-cf-enc'),
-                    row_sub('6.1.7', 'Impostos',                     'dre-cf-imp'),
-                    row_sub('6.1.8', 'Seguro de Vida — Funcionários','dre-cf-seg'),
-                    row_sub('6.1.9', 'Diárias',                      'dre-cf-diar'),
-
-                    # ── 6.2 CUSTOS VARIÁVEIS ──────────────────────────────────
-                    row_titulo('6.2', 'Custos Variáveis', color='#ff8080', bg='rgba(255,92,92,0.03)', size='13px'),
-                    row_sub('6.2.1',  'Despesas com Sistemas',        'dre-cv-sist'),
-                    row_sub('6.2.2',  'Serviços de Terceiros',        'dre-cv-terc'),
-                    row_sub('6.2.3',  'Materiais de Expediente',      'dre-cv-exped'),
-                    row_sub('6.2.4',  'Honorários Contábeis',         'dre-cv-honor'),
-                    row_sub('6.2.5',  'Manutenção e Reposição',       'dre-cv-manut'),
-                    row_sub('6.2.6',  'Viagens e Estadias',           'dre-cv-viag'),
-                    row_sub('6.2.7',  'Taxas Diversas',               'dre-cv-taxas'),
-                    row_sub('6.2.8',  'Uniformes',                    'dre-cv-unif'),
-                    row_sub('6.2.9',  'Material de Limpeza',          'dre-cv-limp'),
-                    row_sub('6.2.10', 'Aluguéis e Locações',          'dre-cv-alug'),
-                    row_sub('6.2.11', 'Faltas e Sobras de Caixa',     'dre-cv-caixa'),
-                    row_sub('6.2.12', 'Juros de Mora',                'dre-cv-mora'),
-                    row_sub('6.2.13', 'Tarifas Bancárias',            'dre-cv-banco'),
-                    row_sub('6.2.14', 'Tarifas Cartões',              'dre-cv-cart'),
-                    row_sub('6.2.15', 'Brindes e Bonificações',       'dre-cv-brindes'),
-                    row_sub('6.2.16', 'Utensílios',                   'dre-cv-utens'),
-                    row_sub('6.2.17', 'Despesas com Veículos',        'dre-cv-veic'),
-                    row_sub('6.2.18', 'Seguros Edificações',          'dre-cv-segpred'),
-                    row_sub('6.2.19', 'Despesas Gerais',              'dre-cv-gerais'),
-                    row_sub('6.2.20', 'Gás GLP',                      'dre-cv-gas'),
-                    row_sub('6.2.21', 'Contagem Estoque',             'dre-cv-estoque'),
-                    row_sub('6.2.22', 'Comissões sobre Vendas',       'dre-cv-comiss'),
-
-                    # ── RESULTADOS FINAIS ─────────────────────────────────────
-                    row_resultado('7. LUCRO BRUTO DA EMPRESA',        'res-lucro-bruto',   color='#3ddc84', bg='rgba(61,220,132,0.08)'),
-                    row_resultado('8. RESULTADO OPERACIONAL',         'res-operacional',   color='#3ddc84', bg='rgba(61,220,132,0.06)'),
-                    row_resultado('9. RESULTADO LÍQUIDO',             'res-liquido',       color='#3ddc84', bg='rgba(61,220,132,0.12)'),
-
-                    # ── 10-12 FUNCIONÁRIOS / HORAS EXTRAS ────────────────────
-                    row_titulo('10', 'FUNCIONÁRIOS & HORAS EXTRAS', color='#5c9eff', bg='rgba(92,158,255,0.06)'),
-
-                    # 10. Total funcionários
-                    html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
-                        html.Td('  10.  Total de Funcionários', style={
-                            'padding':'10px 20px','fontSize':'13px',
-                            'color':'#8fa894','fontFamily':"'Sora',sans-serif",
-                        }),
-                        html.Td(campo('dre-func-total', placeholder='Nº funcionários', width='160px'),
-                                style={'padding':'6px 20px 6px 0','textAlign':'right'}),
+            ]),
+            html.Div(children=[
+                html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
+                    html.Div(style={'padding':'16px 22px 12px','borderBottom':'1px solid rgba(255,255,255,0.06)','background':'#1a1f1c'}, children=[
+                        html.Div("COMPOSIÇÃO DE RECEITAS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#3ddc84','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'3px'}),
+                        html.Div("Vendas Mercadorias + Vendas por Grupo + Outras Receitas = Receita Total", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
                     ]),
-
-                    # 11 + 12. Horas extras com cálculo automático
-                    html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)', 'background':'rgba(92,158,255,0.03)'}, children=[
-                        html.Td([
-                            html.Div('  11.  Total de Horas Extras', style={
-                                'fontSize':'13px','color':'#8fa894',
-                                'fontFamily':"'Sora',sans-serif",'marginBottom':'4px',
-                            }),
-                            html.Div(style={'display':'flex','alignItems':'center','gap':'8px','paddingLeft':'8px','paddingBottom':'4px'}, children=[
-                                html.Span('Horas:', style={'fontSize':'11px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
-                                dcc.Input(id='dre-he-qtd', type='number', placeholder='Qtd. horas', debounce=True,
-                                    style={'width':'110px','padding':'6px 10px','background':'#0d0f0e',
-                                           'border':'1px solid rgba(92,158,255,0.3)','borderRadius':'6px',
-                                           'color':'#5c9eff','fontFamily':"'Space Mono',monospace",'fontSize':'12px',
-                                           'outline':'none','textAlign':'right'}),
-                                html.Span('×  Valor/hora: R$', style={'fontSize':'11px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
-                                dcc.Input(id='dre-he-valor', type='number', placeholder='0,00', debounce=True,
-                                    style={'width':'110px','padding':'6px 10px','background':'#0d0f0e',
-                                           'border':'1px solid rgba(92,158,255,0.3)','borderRadius':'6px',
-                                           'color':'#5c9eff','fontFamily':"'Space Mono',monospace",'fontSize':'12px',
-                                           'outline':'none','textAlign':'right'}),
-                                html.Span('=', style={'fontSize':'13px','color':'#4d5e52'}),
-                                html.Span(id='dre-he-result', children='R$ —', style={
-                                    'fontSize':'13px','fontWeight':'700','color':'#5c9eff',
-                                    'fontFamily':"'Space Mono',monospace",
-                                    'background':'rgba(92,158,255,0.1)','padding':'4px 12px',
-                                    'borderRadius':'6px','minWidth':'120px','textAlign':'right',
-                                }),
-                            ]),
-                        ], style={'padding':'10px 20px'}),
-                        html.Td('', style={'width':'160px'}),
-                    ]),
-
-                    # 12. Valor total horas extras (calculado)
-                    html.Tr(style={'background':'rgba(92,158,255,0.05)','borderBottom':'2px solid rgba(92,158,255,0.15)'}, children=[
-                        html.Td('  12.  Valor Total de Horas Extras', style={
-                            'padding':'12px 20px','fontSize':'13px','fontWeight':'600',
-                            'color':'#5c9eff','fontFamily':"'Sora',sans-serif",
-                        }),
-                        html.Td(id='dre-he-total-display', children='R$ —', style={
-                            'padding':'12px 20px','textAlign':'right',
-                            'fontWeight':'700','fontSize':'14px','color':'#5c9eff',
-                            'fontFamily':"'Space Mono',monospace",
-                        }),
-                    ]),
-
-                ])]),
+                    dcc.Graph(id='fig-receitas', config={'displayModeBar':False}, style={'height':'340px'}),
+                ]),
             ]),
         ])
+
 
     # ── TRANSAÇÕES ─────────────────────────────────────────────────────────────
     elif tab == 'tab-txn':
@@ -1205,17 +1719,10 @@ def render_content(tab, csv_data):
                 html.Td(t['id'],       style={'padding':'13px 20px','fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
                 html.Td(t['data'],     style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#8fa894'}),
                 html.Td(t['descricao'],style={'padding':'13px 16px','fontSize':'13px','color':'#e8ede9'}),
-                html.Td(html.Span(t['categoria'], style={
-                    'padding':'3px 10px','borderRadius':'4px','fontSize':'11px',
-                    'fontWeight':'700','color':cc,'background':f'rgba({r_rgb},0.1)',
-                }), style={'padding':'13px 16px'}),
+                html.Td(html.Span(t['categoria'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'11px','fontWeight':'700','color':cc,'background':f'rgba({r_rgb},0.1)'}), style={'padding':'13px 16px'}),
                 html.Td(t['valor'],    style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'12px','color':'#e8ede9','fontWeight':'600','textAlign':'right'}),
                 html.Td(t['variacao'],style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#c9a84c','textAlign':'center'}),
-                html.Td(html.Span(t['status'], style={
-                    'padding':'3px 10px','borderRadius':'4px','fontSize':'10px',
-                    'fontWeight':'700','color':sc,'background':f'rgba({s_rgb},0.1)',
-                    'fontFamily':"'Space Mono',monospace",'letterSpacing':'1px',
-                }), style={'padding':'13px 20px'}),
+                html.Td(html.Span(t['status'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'10px','fontWeight':'700','color':sc,'background':f'rgba({s_rgb},0.1)','fontFamily':"'Space Mono',monospace",'letterSpacing':'1px'}), style={'padding':'13px 20px'}),
             ]))
         return html.Div([
             upload_bar,
