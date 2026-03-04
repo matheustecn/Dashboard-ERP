@@ -96,6 +96,47 @@ for canonical, aliases in DRE_CAMPOS.items():
     for alias in aliases:
         _ALIAS_MAP[alias.lower().strip()] = canonical
 
+def _parse_number(s):
+    """
+    Detect and parse number format:
+      - Standard float: "197476.65"  -> 197476.65
+      - BRL format:     "197.476,65" -> 197476.65
+      - Empty/None:     returns None
+    """
+    if not s:
+        return None
+    s = s.strip().replace('R$', '').replace(' ', '')
+    if not s:
+        return None
+
+    has_dot   = '.' in s
+    has_comma = ',' in s
+
+    if has_dot and has_comma:
+        # Determine which is thousands vs decimal
+        dot_pos   = s.rfind('.')
+        comma_pos = s.rfind(',')
+        if comma_pos > dot_pos:
+            # BRL: 197.476,65
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            # EN:  197,476.65
+            s = s.replace(',', '')
+    elif has_comma and not has_dot:
+        # Could be BRL decimal: "518,20" or BRL thousands: "1,000"
+        # If exactly 2 digits after comma, treat as decimal
+        after_comma = s.split(',')[-1]
+        if len(after_comma) <= 2:
+            s = s.replace(',', '.')
+        else:
+            s = s.replace(',', '')
+    # else: pure dot decimal "518.20" or integer — use as-is
+
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
 def parse_csv_to_dre(decoded_text):
     """
     Aceita CSV em dois formatos:
@@ -132,15 +173,12 @@ def parse_csv_to_dre(decoded_text):
                         break
             if not canonical:
                 continue
-            raw_val = parts[vi].replace('R$','').replace(' ','').replace('.','').replace(',','.')
-            try:
-                result[canonical] = float(raw_val)
-            except ValueError:
-                pass
+            parsed = _parse_number(parts[vi])
+            if parsed is not None:
+                result[canonical] = parsed
         return result, len(result)
 
     # Formato B: cabeçalho com nomes de campos + linha(s) de valores
-    # Cada coluna do cabeçalho é um campo DRE
     canonical_cols = []
     for h in header:
         canonical_cols.append(_ALIAS_MAP.get(h))
@@ -150,11 +188,9 @@ def parse_csv_to_dre(decoded_text):
         for i, val_raw in enumerate(parts):
             if i >= len(canonical_cols) or canonical_cols[i] is None:
                 continue
-            val_raw = val_raw.replace('R$','').replace(' ','').replace('.','').replace(',','.')
-            try:
-                result[canonical_cols[i]] = float(val_raw)
-            except ValueError:
-                pass
+            parsed = _parse_number(val_raw)
+            if parsed is not None:
+                result[canonical_cols[i]] = parsed
     return result, len(result)
 
 
@@ -521,7 +557,7 @@ def _input_style(width='260px'):
     }
 
 def _campo(field_id, placeholder='0,00', width='260px'):
-    return dcc.Input(id=field_id, type='number', placeholder=placeholder,
+    return dcc.Input(id=field_id, type='text', placeholder=placeholder,
                      debounce=False, style=_input_style(width))
 
 def _row_titulo(num, label, color='#3ddc84', bg='rgba(61,220,132,0.07)', size='14px'):
@@ -1290,12 +1326,20 @@ def fill_dre_from_csv(csv_data):
     # Campos agora sempre existem no DOM — preenche direto
     if not csv_data:
         raise dash.exceptions.PreventUpdate
+    def fmt_brl(v):
+        if v is None: return None
+        try:
+            f = float(v)
+            # Format as Brazilian: 1234.56 → "1.234,56"
+            formatted = f'{f:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
+            return formatted
+        except:
+            return None
     results = []
     for fid in _ALL_DRE_FIELD_IDS:
         key = _field_id_to_key(fid)
         val = csv_data.get(key)
-        # Return the value if present (including 0), None only if key missing entirely
-        results.append(val if val is not None else None)
+        results.append(fmt_brl(val))
     return results
 
 
@@ -1358,7 +1402,22 @@ def save_dre_store(*vals):
         'cv_limp','cv_alug','cv_caixa','cv_mora','cv_banco','cv_cart','cv_brindes','cv_utens',
         'cv_veic','cv_segpred','cv_gerais','cv_gas','cv_estoque','cv_comiss',
     ]
-    return {k: (float(v) if v else 0.0) for k, v in zip(keys, vals)}
+    def to_float(v):
+        if v is None or v == '': return 0.0
+        if isinstance(v, (int, float)): return float(v)
+        # Parse Brazilian format: "1.234,56" → 1234.56
+        s = str(v).strip().replace('R$','').replace(' ','').replace('.','').replace(',','.')
+        try: return float(s)
+        except: return 0.0
+    return {k: to_float(v) for k, v in zip(keys, vals)}
+
+def _parse(v):
+    """Parse a value that might be a BRL-formatted string or float."""
+    if v is None or v == '': return 0.0
+    if isinstance(v, (int, float)): return float(v)
+    s = str(v).strip().replace('R$','').replace(' ','').replace('.','').replace(',','.')
+    try: return float(s)
+    except: return 0.0
 
 def _v(d, *keys):
     return sum(d.get(k, 0.0) for k in keys)
@@ -1373,7 +1432,7 @@ def _v(d, *keys):
     prevent_initial_call=False,
 )
 def calc_receita_total(*vals):
-    total = sum(float(v) for v in vals if v is not None)
+    total = sum(_parse(v) for v in vals if v is not None)
     if total == 0: return 'R$ 0,00'
     return f"R$ {total:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
 
@@ -1394,8 +1453,8 @@ def calc_receita_total(*vals):
     prevent_initial_call=False,
 )
 def calc_margem(*vals):
-    receita = sum(float(v) for v in vals[:7]  if v is not None)
-    compras = sum(float(v) for v in vals[7:]  if v is not None)
+    receita = sum(_parse(v) for v in vals[:7]  if v is not None)
+    compras = sum(_parse(v) for v in vals[7:]  if v is not None)
     margem  = receita - compras
     if receita == 0 and compras == 0: return '—'
     return f"R$ {margem:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
@@ -1423,10 +1482,10 @@ _CV_IDS   = ['dre-cv-sist','dre-cv-terc','dre-cv-exped','dre-cv-honor','dre-cv-m
 )
 def calc_resultados(*vals):
     nr = len(_REC_IDS); nc = len(_COMP_IDS); nf = len(_CF_IDS)
-    receita     = sum(float(v) for v in vals[:nr]       if v is not None)
-    compras     = sum(float(v) for v in vals[nr:nr+nc]  if v is not None)
-    cf          = sum(float(v) for v in vals[nr+nc:nr+nc+nf] if v is not None)
-    cv          = sum(float(v) for v in vals[nr+nc+nf:] if v is not None)
+    receita     = sum(_parse(v) for v in vals[:nr]       if v is not None)
+    compras     = sum(_parse(v) for v in vals[nr:nr+nc]  if v is not None)
+    cf          = sum(_parse(v) for v in vals[nr+nc:nr+nc+nf] if v is not None)
+    cv          = sum(_parse(v) for v in vals[nr+nc+nf:] if v is not None)
     lucro_bruto = (receita - compras) - cf
     operacional = lucro_bruto - cv
     liquido     = operacional
@@ -1998,6 +2057,41 @@ def load_dre_from_history(n_clicks_list, log):
     clean = {k: v for k, v in entry.items() if not k.startswith('_')}
     return clean, {'display':'none'}, toast, {'display':'block'}
 
+
+
+# ── FORMAT INPUTS AS BRL ON BLUR ─────────────────────────────────────────────
+app.clientside_callback(
+    """
+    function(_) {
+        document.querySelectorAll('.dre-card input[type=text]').forEach(function(inp) {
+            if (inp._brlFmt) return;
+            inp._brlFmt = true;
+
+            inp.addEventListener('focus', function() {
+                var raw = this.value.replace(/\./g,'').replace(',','.');
+                var num = parseFloat(raw);
+                if (!isNaN(num) && num !== 0) {
+                    this.value = num.toFixed(2).replace('.', ',');
+                } else {
+                    this.value = '';
+                }
+            });
+
+            inp.addEventListener('blur', function() {
+                var raw = this.value.replace(/\./g,'').replace(',','.');
+                var num = parseFloat(raw);
+                if (!isNaN(num)) {
+                    this.value = num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+                }
+            });
+        });
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('dre-tab-wrapper', 'data-fmt', allow_duplicate=True),
+    Input('dre-tab-wrapper', 'id'),
+    prevent_initial_call=False,
+)
 
 # ── AUTO-DISMISS TOAST (clientside) ──────────────────────────────────────────
 app.clientside_callback(
