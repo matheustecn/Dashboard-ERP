@@ -303,199 +303,207 @@ def gerar_template_csv():
         linhas.append(f"{campo},0")
     return '\n'.join(linhas).encode('utf-8')
 
-# ── FUNÇÃO DE GERAÇÃO DO EXCEL ────────────────────────────────────────────────
-def gerar_excel():
+# ── FUNÇÃO DE GERAÇÃO DO EXCEL — DRE REAL ────────────────────────────────────
+def gerar_excel(dre_data=None):
+    if dre_data is None:
+        dre_data = {}
+
+    def v(key): return dre_data.get(key, 0.0) or 0.0
+    def fmt(val): return f"R$ {val:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+    def pct(val, total): return f"{(val/total*100):.2f}%" if total else "—"
+
+    # Cálculos
+    receita_merc   = v('venda_vista') + v('venda_prazo')
+    outras_rec     = v('or_juros')+v('or_alug')+v('or_outras')+v('or_fundos')+v('or_bonif')
+    receita_total  = receita_merc + outras_rec
+    total_compras  = sum(v(k) for k in ['c_bebidas','c_bolos','c_carnes','c_cigarros','c_conv',
+                         'c_estcoz','c_picoles','c_salgados','c_insumos','c_embal',
+                         'c_recarga','c_bichos','c_buffet'])
+    margem         = receita_total - total_compras
+    total_cf       = sum(v(k) for k in ['cf_energia','cf_tel','cf_agua','cf_iptu','cf_sal',
+                         'cf_enc','cf_imp','cf_seg','cf_diar'])
+    total_cv       = sum(v(k) for k in ['cv_sist','cv_terc','cv_exped','cv_honor','cv_manut',
+                         'cv_viag','cv_taxas','cv_unif','cv_limp','cv_alug','cv_caixa',
+                         'cv_mora','cv_banco','cv_cart','cv_brindes','cv_utens','cv_veic',
+                         'cv_segpred','cv_gerais','cv_gas','cv_estoque','cv_comiss'])
+    total_custos   = total_cf + total_cv
+    lucro_bruto    = margem - total_cf
+    lucro_oper     = lucro_bruto - total_cv
+    lucro_liq      = lucro_oper
+    RT = receita_total if receita_total else 1  # avoid div/0
+
+    # DRE rows: (label, valor, percentual, tipo)
+    # tipo: 'titulo'|'subtotal'|'item'|'resultado'|'secao'
+    DRE_ROWS = [
+        ("1. RECEITA TOTAL",                         receita_total, pct(receita_total,RT), 'titulo'),
+        ("2. RECEITA — VENDAS DE MERCADORIAS",        receita_merc,  pct(receita_merc,RT),  'secao'),
+        ("   2.1  Vendas à Vista",                    v('venda_vista'),  pct(v('venda_vista'),RT),  'item'),
+        ("   2.2  Vendas a Prazo",                    v('venda_prazo'),  pct(v('venda_prazo'),RT),  'item'),
+        ("3. VENDAS POR GRUPOS",                      receita_merc,  pct(receita_merc,RT),  'secao'),
+        ("   3.1  Bolos e Tortas",         v('g_bolos'),  pct(v('g_bolos'),RT),  'item'),
+        ("   3.2  Buffet",                 v('g_buffet'), pct(v('g_buffet'),RT), 'item'),
+        ("   3.3  Cafés e Sucos",          v('g_cafes'),  pct(v('g_cafes'),RT),  'item'),
+        ("   3.4  Lanches",                v('g_lanches'),pct(v('g_lanches'),RT),'item'),
+        ("   3.5  Porções",                v('g_porcoes'),pct(v('g_porcoes'),RT),'item'),
+        ("   3.6  Salgados Prontos",       v('g_salgados'),pct(v('g_salgados'),RT),'item'),
+        ("   3.7  Drinks",                 v('g_drinks'), pct(v('g_drinks'),RT), 'item'),
+        ("   3.8  Conveniência",           v('g_conv'),   pct(v('g_conv'),RT),   'item'),
+        ("   3.9  Cigarros",               v('g_cigarros'),pct(v('g_cigarros'),RT),'item'),
+        ("   3.10 Bebidas",                v('g_bebidas'),pct(v('g_bebidas'),RT),'item'),
+        ("   3.11 Picolé",                 v('g_picole'), pct(v('g_picole'),RT), 'item'),
+        ("   3.12 Estoque Cozinha",        v('g_estcoz'), pct(v('g_estcoz'),RT), 'item'),
+        ("   3.13 Bichos de Pelúcia e Brinquedos", v('g_bichos'), pct(v('g_bichos'),RT), 'item'),
+        ("   3.14 Carnes",                 v('g_carnes'), pct(v('g_carnes'),RT), 'item'),
+        ("4. OUTRAS RECEITAS OPERACIONAIS",           outras_rec,    pct(outras_rec,RT),    'secao'),
+        ("   4.1  Juros Recebidos",        v('or_juros'), pct(v('or_juros'),RT), 'item'),
+        ("   4.2  Aluguéis",               v('or_alug'),  pct(v('or_alug'),RT),  'item'),
+        ("   4.4  Outras Receitas",        v('or_outras'),pct(v('or_outras'),RT),'item'),
+        ("   4.5  Rendimentos Fundos Invest.", v('or_fundos'),pct(v('or_fundos'),RT),'item'),
+        ("   4.6  Bonificações Recebidas", v('or_bonif'), pct(v('or_bonif'),RT), 'item'),
+        ("",                                           None, None, 'spacer'),
+        ("5. TOTAL COMPRA DE MERCADORIAS",             total_compras, pct(total_compras,RT), 'secao_red'),
+        ("   5.1  Bebidas",                v('c_bebidas'),pct(v('c_bebidas'),RT),'item'),
+        ("   5.2  Bolos e Tortas",         v('c_bolos'),  pct(v('c_bolos'),RT),  'item'),
+        ("   5.3  Carnes",                 v('c_carnes'), pct(v('c_carnes'),RT), 'item'),
+        ("   5.4  Cigarros",               v('c_cigarros'),pct(v('c_cigarros'),RT),'item'),
+        ("   5.5  Conveniência",           v('c_conv'),   pct(v('c_conv'),RT),   'item'),
+        ("   5.6  Estoque Cozinha",        v('c_estcoz'), pct(v('c_estcoz'),RT), 'item'),
+        ("   5.7  Picolés",                v('c_picoles'),pct(v('c_picoles'),RT),'item'),
+        ("   5.8  Salgados Prontos",       v('c_salgados'),pct(v('c_salgados'),RT),'item'),
+        ("   5.9  Insumos",                v('c_insumos'),pct(v('c_insumos'),RT),'item'),
+        ("   5.10 Embalagens",             v('c_embal'),  pct(v('c_embal'),RT),  'item'),
+        ("   5.11 Recarga Celular",        v('c_recarga'),pct(v('c_recarga'),RT),'item'),
+        ("   5.12 Bichos de Pelúcia e Brinquedos", v('c_bichos'), pct(v('c_bichos'),RT), 'item'),
+        ("   5.13 Buffet",                 v('c_buffet'), pct(v('c_buffet'),RT), 'item'),
+        ("",                                           None, None, 'spacer'),
+        ("5. MARGEM DE CONTRIBUIÇÃO",                  margem,  pct(margem,RT),  'resultado_green'),
+        ("",                                           None, None, 'spacer'),
+        ("6. TOTAL CUSTOS FIXOS + VARIÁVEIS",          total_custos, pct(total_custos,RT), 'secao_red'),
+        ("6.1 CUSTOS FIXOS",                           total_cf,     "", 'sub_red'),
+        ("   6.1.1  Energia Elétrica",     v('cf_energia'),pct(v('cf_energia'),RT),'item'),
+        ("   6.1.2  Telefone",             v('cf_tel'),   pct(v('cf_tel'),RT),   'item'),
+        ("   6.1.3  Água",                 v('cf_agua'),  pct(v('cf_agua'),RT),  'item'),
+        ("   6.1.4  IPTU",                 v('cf_iptu'),  pct(v('cf_iptu'),RT),  'item'),
+        ("   6.1.5  Salários / Férias / 13º", v('cf_sal'),pct(v('cf_sal'),RT),  'item'),
+        ("   6.1.6  Encargos Sociais",     v('cf_enc'),   pct(v('cf_enc'),RT),   'item'),
+        ("   6.1.7  Impostos",             v('cf_imp'),   pct(v('cf_imp'),RT),   'item'),
+        ("   6.1.8  Seguro de Vida",       v('cf_seg'),   pct(v('cf_seg'),RT),   'item'),
+        ("   6.1.9  Diárias",              v('cf_diar'),  pct(v('cf_diar'),RT),  'item'),
+        ("6.2 CUSTOS VARIÁVEIS",                       total_cv,     "", 'sub_red'),
+        ("   6.2.1  Despesas com Sistemas",v('cv_sist'),  pct(v('cv_sist'),RT),  'item'),
+        ("   6.2.2  Serviços de Terceiros",v('cv_terc'),  pct(v('cv_terc'),RT),  'item'),
+        ("   6.2.3  Materiais de Expediente",v('cv_exped'),pct(v('cv_exped'),RT),'item'),
+        ("   6.2.4  Honorários Contábeis", v('cv_honor'), pct(v('cv_honor'),RT), 'item'),
+        ("   6.2.5  Manutenção e Reposição",v('cv_manut'),pct(v('cv_manut'),RT), 'item'),
+        ("   6.2.6  Viagens e Estadias",   v('cv_viag'),  pct(v('cv_viag'),RT),  'item'),
+        ("   6.2.7  Taxas Diversas",       v('cv_taxas'), pct(v('cv_taxas'),RT), 'item'),
+        ("   6.2.8  Uniformes",            v('cv_unif'),  pct(v('cv_unif'),RT),  'item'),
+        ("   6.2.9  Material de Limpeza",  v('cv_limp'),  pct(v('cv_limp'),RT),  'item'),
+        ("   6.2.10 Aluguéis e Locações",  v('cv_alug'),  pct(v('cv_alug'),RT),  'item'),
+        ("   6.2.11 Faltas e Sobras de Caixa",v('cv_caixa'),pct(v('cv_caixa'),RT),'item'),
+        ("   6.2.12 Juros de Mora",        v('cv_mora'),  pct(v('cv_mora'),RT),  'item'),
+        ("   6.2.13 Tarifas Bancárias",    v('cv_banco'), pct(v('cv_banco'),RT), 'item'),
+        ("   6.2.14 Tarifas Cartões",      v('cv_cart'),  pct(v('cv_cart'),RT),  'item'),
+        ("   6.2.15 Brindes e Bonificações",v('cv_brindes'),pct(v('cv_brindes'),RT),'item'),
+        ("   6.2.16 Utensílios",           v('cv_utens'), pct(v('cv_utens'),RT), 'item'),
+        ("   6.2.17 Despesas com Veículos",v('cv_veic'),  pct(v('cv_veic'),RT),  'item'),
+        ("   6.2.18 Seguros Edificações",  v('cv_segpred'),pct(v('cv_segpred'),RT),'item'),
+        ("   6.2.19 Despesas Gerais",      v('cv_gerais'),pct(v('cv_gerais'),RT),'item'),
+        ("   6.2.20 Gás GLP",              v('cv_gas'),   pct(v('cv_gas'),RT),   'item'),
+        ("   6.2.21 Contagem Estoque",     v('cv_estoque'),pct(v('cv_estoque'),RT),'item'),
+        ("   6.2.22 Comissões sobre Vendas",v('cv_comiss'),pct(v('cv_comiss'),RT),'item'),
+        ("",                                           None, None, 'spacer'),
+        ("7.  RESULTADO LUCRO BRUTO EMPRESA",          lucro_bruto, pct(lucro_bruto,RT), 'resultado_green'),
+        ("",                                           None, None, 'spacer'),
+        ("8.  RESULTADO OPERACIONAL",                  lucro_oper,  pct(lucro_oper,RT),  'resultado_green'),
+        ("",                                           None, None, 'spacer'),
+        ("9.  RESULTADO LÍQUIDO DA EMPRESA",           lucro_liq,   pct(lucro_liq,RT),   'resultado_green'),
+    ]
+    # ── Workbook ─────────────────────────────────────────────────────────────
     wb = openpyxl.Workbook()
 
-    C_GREEN = "FF3DDC84"; C_DARK = "FF0D0F0E"; C_BG2 = "FF131714"
-    C_BG3 = "FF1A1F1C"; C_TEXT = "FFE8EDE9"; C_GOLD = "FFC9A84C"
-    C_RED = "FFFF5C5C"; C_MID = "FF8FA894"
+    CG  = "FF3DDC84"; CD  = "FF0D0F0E"; CB2 = "FF131714"
+    CB3 = "FF1A1F1C"; CT  = "FFE8EDE9"; CG2 = "FFC9A84C"
+    CR  = "FFFF5C5C"; CM  = "FF8FA894"; CB4 = "FF222720"
+    CR2 = "FFFF8080"
 
-    def hdr_font(bold=True, size=11, color=C_TEXT):
-        return Font(name='Calibri', bold=bold, size=size, color=color)
-    def fill(hex_color):
-        return PatternFill("solid", fgColor=hex_color)
-    def center():
-        return Alignment(horizontal='center', vertical='center', wrap_text=True)
-    def thin_border():
+    def xf(c):  return PatternFill("solid", fgColor=c)
+    def xb():
         s = Side(style='thin', color="FF2A3330")
         return Border(left=s, right=s, top=s, bottom=s)
+    def xfont(bold=False, sz=10, color=CT):
+        return Font(name='Calibri', bold=bold, size=sz, color=color)
 
-    # ABA 1: DASHBOARD
+    TIPO = {
+        'titulo':          (CG,  CB2, True,  12),
+        'secao':           (CG,  CB3, True,  11),
+        'secao_red':       (CR,  CB3, True,  11),
+        'sub_red':         (CR2, CB3, True,  10),
+        'item':            (CT,  CB4, False, 10),
+        'resultado_green': (CG,  CB2, True,  12),
+        'spacer':          (CM,  CD,  False,  8),
+    }
+
     ws = wb.active
-    ws.title = "Dashboard"
+    ws.title = "DRE"
     ws.sheet_view.showGridLines = False
     ws.column_dimensions['A'].width = 3
+    ws.column_dimensions['B'].width = 46
+    ws.column_dimensions['C'].width = 20
+    ws.column_dimensions['D'].width = 12
 
-    ws.merge_cells('B2:H3')
-    ws['B2'] = "GUAPO ERP · Dashboard Financeiro 2025"
-    ws['B2'].font = Font(name='Calibri', bold=True, size=18, color=C_GREEN)
-    ws['B2'].fill = fill(C_DARK)
+    # Título
+    ws.merge_cells('B2:D3')
+    ws['B2'] = "DEMONSTRAÇÃO DO RESULTADO DO EXERCÍCIO"
+    ws['B2'].font = Font(name='Calibri', bold=True, size=16, color=CG)
+    ws['B2'].fill = xf(CD)
     ws['B2'].alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells('B4:H4')
+    ws.merge_cells('B4:D4')
     ws['B4'] = f"Gerado em {datetime.datetime.now().strftime('%d/%m/%Y às %H:%M')}"
-    ws['B4'].font = Font(name='Calibri', size=9, color=C_MID)
-    ws['B4'].fill = fill(C_DARK)
-    ws.row_dimensions[2].height = 36
+    ws['B4'].font = Font(name='Calibri', size=9, color=CM, italic=True)
+    ws['B4'].fill = xf(CD)
+    ws.row_dimensions[2].height = 38
     ws.row_dimensions[4].height = 16
-    ws.row_dimensions[5].height = 10
+    ws.row_dimensions[5].height = 8
 
-    kpis = [
-        ("Receita Total 2025", "R$ 2.310.000", C_GREEN, "+14% vs 2024"),
-        ("Despesas Totais",    "R$ 1.526.000", C_RED,   "+9% vs 2024"),
-        ("Lucro Líquido",      "R$   784.000", C_GOLD,  "+21% vs 2024"),
-        ("Margem Líquida",     "33,9%",        C_TEXT,  "Meta: 30%  ✓"),
-    ]
-    for idx, (col, (lbl, val, val_color, sub)) in enumerate(zip(['B','D','F','H'], kpis)):
-        nc = chr(ord(col)+1)
-        for r in range(6, 10):
-            ws.merge_cells(f'{col}{r}:{nc}{r}')
-            ws[f'{col}{r}'].fill = fill(C_BG2)
-        ws[f'{col}6'].value = "■ KPI"
-        ws[f'{col}6'].font = Font(name='Calibri', size=8, color=C_MID, bold=True)
-        ws[f'{col}6'].alignment = Alignment(horizontal='center', vertical='center')
-        ws[f'{col}7'].value = lbl
-        ws[f'{col}7'].font = Font(name='Calibri', size=9, color=C_MID)
-        ws[f'{col}7'].alignment = Alignment(horizontal='center', vertical='center')
-        ws[f'{col}8'].value = val
-        ws[f'{col}8'].font = Font(name='Calibri', bold=True, size=16, color=val_color)
-        ws[f'{col}8'].alignment = Alignment(horizontal='center', vertical='center')
-        ws[f'{col}9'].value = sub
-        ws[f'{col}9'].font = Font(name='Calibri', size=9, color=C_MID, italic=True)
-        ws[f'{col}9'].alignment = Alignment(horizontal='center', vertical='center')
-    for r in [6,7,8,9,10]:
-        ws.row_dimensions[r].height = 22 if r==8 else 18
+    # Cabeçalho da tabela
+    for col, label in [('B','DESCRIÇÃO'), ('C','VALOR (R$)'), ('D','% RECEITA')]:
+        c = ws[f'{col}6']
+        c.value = label
+        c.font = Font(name='Calibri', bold=True, size=10, color=CD)
+        c.fill = xf(CG)
+        c.alignment = Alignment(horizontal='left' if col=='B' else 'right', vertical='center')
+        c.border = xb()
+    ws.row_dimensions[6].height = 22
 
-    ws.row_dimensions[11].height = 8
-    ws.row_dimensions[12].height = 24
-    headers_d = ["Mês","Receita","Despesa","Lucro","Margem %"]
-    start_cols = [2,3,4,5,6]
-    for ci, h in zip(start_cols, headers_d):
-        cell = ws.cell(row=12, column=ci)
-        cell.value = h
-        cell.font = hdr_font(bold=True, size=10, color=C_DARK)
-        cell.fill = fill(C_GREEN)
-        cell.alignment = center()
-        cell.border = thin_border()
+    # Linhas do DRE
+    for i, (label, valor, perc, tipo) in enumerate(DRE_ROWS):
+        row = 7 + i
+        txt_color, bg_color, bold, size = TIPO.get(tipo, (CT, CB4, False, 10))
+        ws.row_dimensions[row].height = 8 if tipo == 'spacer' else 20
 
-    for i, (mes, rec, des, luc) in enumerate(zip(MESES, RECEITA, DESPESA, LUCRO)):
-        row = 13 + i
-        ws.row_dimensions[row].height = 18
-        bg = C_BG3 if i % 2 == 0 else C_BG2
-        margem = f"{(luc/rec*100):.1f}%"
-        valores = [mes, f"R$ {rec:,.0f}", f"R$ {des:,.0f}", f"R$ {luc:,.0f}", margem]
-        for ci, v in zip(start_cols, valores):
-            cell = ws.cell(row=row, column=ci)
-            cell.value = v
-            cell.fill = fill(bg)
-            cell.alignment = center()
-            cell.border = thin_border()
-            if ci == 5:
-                cell.font = Font(name='Calibri', bold=True, size=10, color=C_GREEN if luc >= 0 else C_RED)
-            elif ci == 6:
-                cell.font = Font(name='Calibri', size=10, color=C_GOLD)
-            else:
-                cell.font = Font(name='Calibri', size=10, color=C_TEXT)
+        c_desc = ws[f'B{row}']
+        c_desc.value = label
+        c_desc.font  = Font(name='Calibri', bold=bold, size=size, color=txt_color)
+        c_desc.fill  = xf(bg_color)
+        c_desc.alignment = Alignment(horizontal='left', vertical='center', indent=1)
+        c_desc.border = xb()
 
-    for ci in start_cols:
-        ws.column_dimensions[get_column_letter(ci)].width = 18
+        c_val = ws[f'C{row}']
+        if valor is not None:
+            c_val.value = valor
+            c_val.number_format = 'R$ #,##0.00'
+        c_val.font  = Font(name='Calibri', bold=bold, size=size, color=txt_color)
+        c_val.fill  = xf(bg_color)
+        c_val.alignment = Alignment(horizontal='right', vertical='center')
+        c_val.border = xb()
 
-    # ABA 2: DRE
-    ws2 = wb.create_sheet("DRE")
-    ws2.sheet_view.showGridLines = False
-    ws2.column_dimensions['A'].width = 3
-    ws2.merge_cells('B2:G3')
-    ws2['B2'] = "DEMONSTRAÇÃO DO RESULTADO DO EXERCÍCIO — 2025"
-    ws2['B2'].font = Font(name='Calibri', bold=True, size=14, color=C_GREEN)
-    ws2['B2'].fill = fill(C_DARK)
-    ws2['B2'].alignment = Alignment(horizontal='left', vertical='center')
-    ws2.row_dimensions[2].height = 32
-
-    cols_dre = ['B','C','D','E','F','G']
-    hdrs_dre = ['Conta','Jan','Fev','Mar','Abr (est.)','Total Trim.']
-    ws2.row_dimensions[5].height = 22
-    for ci, h in zip(cols_dre, hdrs_dre):
-        c = ws2[f'{ci}5']
-        c.value = h
-        c.font = hdr_font(bold=True, size=10, color=C_DARK)
-        c.fill = fill(C_GREEN)
-        c.alignment = center()
-        c.border = thin_border()
-
-    tipo_styles_xl = {
-        'receita_bruta': (C_GREEN, C_BG2, True,  12),
-        'deducao':       (C_RED,   C_BG3, False,  10),
-        'subtotal':      (C_GOLD,  C_BG2, True,   11),
-        'ebitda':        (C_GREEN, C_BG3, True,   12),
-        'lucro':         (C_GREEN, C_DARK,True,   13),
-        'item':          (C_TEXT,  C_BG3, False,  10),
-    }
-    for i, row_data in enumerate(DRE_MOCK):
-        row = 6 + i
-        ws2.row_dimensions[row].height = 18
-        tipo = row_data['tipo']
-        txt_color, bg_color, bold, size = tipo_styles_xl.get(tipo, (C_TEXT, C_BG3, False, 10))
-        values = [row_data['conta'], row_data['jan'], row_data['fev'],
-                  row_data['mar'], '—', row_data['total']]
-        for ci, v in zip(cols_dre, values):
-            c = ws2.cell(row=row, column=ord(ci)-64)
-            c.value = v
-            c.font = Font(name='Calibri', bold=bold, size=size, color=txt_color)
-            c.fill = fill(bg_color)
-            c.alignment = Alignment(horizontal='left' if ci=='B' else 'right', vertical='center')
-            c.border = thin_border()
-    ws2.column_dimensions['B'].width = 34
-    for ci in ['C','D','E','F','G']:
-        ws2.column_dimensions[ci].width = 16
-
-    # ABA 3: TRANSAÇÕES
-    ws3 = wb.create_sheet("Transações")
-    ws3.sheet_view.showGridLines = False
-    ws3.column_dimensions['A'].width = 3
-    ws3.merge_cells('B2:H3')
-    ws3['B2'] = "HISTÓRICO DE TRANSAÇÕES — DEZEMBRO 2025"
-    ws3['B2'].font = Font(name='Calibri', bold=True, size=14, color=C_GREEN)
-    ws3['B2'].fill = fill(C_DARK)
-    ws3['B2'].alignment = Alignment(horizontal='left', vertical='center')
-    ws3.row_dimensions[2].height = 32
-
-    hdrs_txn = ['ID','Data','Descrição','Categoria','Valor','Variação','Status']
-    cols_txn = ['B','C','D','E','F','G','H']
-    ws3.row_dimensions[5].height = 22
-    for ci, h in zip(cols_txn, hdrs_txn):
-        c = ws3[f'{ci}5']
-        c.value = h
-        c.font = hdr_font(bold=True, size=10, color=C_DARK)
-        c.fill = fill(C_GREEN)
-        c.alignment = center()
-        c.border = thin_border()
-
-    for i, t in enumerate(TRANSACOES_MOCK):
-        row = 6 + i
-        ws3.row_dimensions[row].height = 18
-        bg = C_BG3 if i % 2 == 0 else C_BG2
-        vals = [t['id'],t['data'],t['descricao'],t['categoria'],t['valor'],t['variacao'],t['status']]
-        for ci, v in zip(cols_txn, vals):
-            c = ws3.cell(row=row, column=ord(ci)-64)
-            c.value = v
-            c.fill = fill(bg)
-            c.border = thin_border()
-            c.alignment = Alignment(horizontal='center', vertical='center')
-            if ci == 'E':
-                c.font = Font(name='Calibri', size=10, color=C_GREEN if v=='Receita' else C_RED)
-            elif ci == 'F':
-                c.font = Font(name='Calibri', size=10, bold=True, color=C_TEXT)
-            elif ci == 'G':
-                c.font = Font(name='Calibri', size=10, color=C_GOLD)
-            elif ci == 'H':
-                sc = {'Confirmado':C_GREEN,'Processado':C_GOLD,'Pendente':C_RED}.get(v, C_TEXT)
-                c.font = Font(name='Calibri', size=10, color=sc)
-            else:
-                c.font = Font(name='Calibri', size=10, color=C_TEXT)
-
-    widths_txn = [8,14,38,14,16,12,14]
-    for ci, w in zip(cols_txn, widths_txn):
-        ws3.column_dimensions[ci].width = w
+        c_pct = ws[f'D{row}']
+        c_pct.value = perc or ''
+        c_pct.font  = Font(name='Calibri', size=9, color=CM if tipo=='item' else txt_color)
+        c_pct.fill  = xf(bg_color)
+        c_pct.alignment = Alignment(horizontal='right', vertical='center')
+        c_pct.border = xb()
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -503,18 +511,18 @@ def gerar_excel():
     return buf.read()
 
 # ── CONSTRUTOR DO TAB DRE (sempre no DOM) ────────────────────────────────────
-def _input_style():
+def _input_style(width='260px'):
     return {
-        'width': '140px', 'padding': '7px 10px',
+        'width': width, 'minWidth': width, 'padding': '9px 16px',
         'background': '#0d0f0e', 'border': '1px solid rgba(255,255,255,0.1)',
         'borderRadius': '6px', 'color': '#e8ede9',
-        'fontFamily': "'Space Mono',monospace", 'fontSize': '12px',
+        'fontFamily': "'Space Mono',monospace", 'fontSize': '13px',
         'textAlign': 'right', 'outline': 'none',
     }
 
-def _campo(field_id, placeholder='0,00', width='140px'):
-    s = _input_style(); s['width'] = width
-    return dcc.Input(id=field_id, type='number', placeholder=placeholder, debounce=True, style=s)
+def _campo(field_id, placeholder='0,00', width='260px'):
+    return dcc.Input(id=field_id, type='number', placeholder=placeholder,
+                     debounce=False, style=_input_style(width))
 
 def _row_titulo(num, label, color='#3ddc84', bg='rgba(61,220,132,0.07)', size='14px'):
     return html.Tr(style={'background': bg, 'borderBottom': '1px solid rgba(255,255,255,0.08)'}, children=[
@@ -527,10 +535,10 @@ def _row_titulo(num, label, color='#3ddc84', bg='rgba(61,220,132,0.07)', size='1
 def _row_sub(num, label, field_id):
     return html.Tr(style={'borderBottom': '1px solid rgba(255,255,255,0.04)'}, children=[
         html.Td(f'  {num}  {label}', style={
-            'padding': '10px 20px', 'fontSize': '13px',
+            'padding': '10px 20px', 'fontSize': '13px', 'width': '60%',
             'color': '#8fa894', 'fontFamily': "'Sora',sans-serif",
         }),
-        html.Td(_campo(field_id), style={'padding': '6px 20px 6px 0', 'textAlign': 'right'}),
+        html.Td(_campo(field_id), style={'padding': '6px 24px 6px 0', 'textAlign': 'right', 'width': '40%'}),
     ])
 
 def _row_resultado(label, result_id, color='#e8c97a', bg='rgba(201,168,76,0.06)'):
@@ -856,6 +864,8 @@ app.layout = html.Div([
     dcc.Store(id='csv-store',   data={}),
     dcc.Store(id='dre-store',   data={}),
     dcc.Store(id='active-tab',  data='tab-ind'),
+    dcc.Store(id='dre-log',     data={}),        # {"2025-01": {...dre_data}, ...}
+    dcc.Store(id='search-result', data=None),    # DRE loaded from history
     dcc.Interval(id='clock-tick', interval=60_000, n_intervals=0),
     dcc.Download(id='download-excel'),
     dcc.Download(id='download-template'),
@@ -895,6 +905,73 @@ app.layout = html.Div([
                 html.Div(style={'marginTop':'24px','display':'flex','justifyContent':'flex-end'}, children=[
                     html.Button("Fechar", id='btn-modal-config-close2', className='btn-action'),
                 ]),
+            ])
+        ])
+    ]),
+
+
+    # MODAL SALVAR DRE
+    html.Div(id='modal-save-overlay', style={'display':'none'}, children=[
+        html.Div(className='modal-overlay', children=[
+            html.Div(className='modal-box', style={'maxWidth':'400px'}, children=[
+                html.Button("✕", id='btn-save-close', className='modal-close'),
+                html.Div("💾 Salvar DRE", className='modal-title'),
+                html.Div("Selecione o mês e ano de referência deste DRE", className='modal-sub'),
+                html.Div(style={'display':'flex','gap':'12px','marginTop':'20px'}, children=[
+                    html.Div(style={'flex':'1'}, children=[
+                        html.Div("Mês", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#8fa894','marginBottom':'6px','textTransform':'uppercase','letterSpacing':'2px'}),
+                        dcc.Dropdown(id='save-mes',
+                            options=[{'label':m,'value':str(i+1).zfill(2)} for i,m in enumerate(
+                                ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+                                 'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'])],
+                            value=None, placeholder='Mês...',
+                            className='dre-dropdown'),
+                    ]),
+                    html.Div(style={'flex':'1'}, children=[
+                        html.Div("Ano", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#8fa894','marginBottom':'6px','textTransform':'uppercase','letterSpacing':'2px'}),
+                        dcc.Dropdown(id='save-ano',
+                            options=[{'label':str(y),'value':str(y)} for y in range(2023,2030)],
+                            value='2025', placeholder='Ano...',
+                            className='dre-dropdown'),
+                    ]),
+                ]),
+                html.Div(id='save-status', style={'marginTop':'14px','minHeight':'20px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#3ddc84'}),
+                html.Div(style={'marginTop':'20px','display':'flex','justifyContent':'flex-end','gap':'10px'}, children=[
+                    html.Button("Cancelar", id='btn-save-cancel', className='btn-action',
+                                style={'background':'transparent','border':'1px solid rgba(255,255,255,0.1)'}),
+                    html.Button("💾 Salvar", id='btn-save-confirm', className='btn-action',
+                                style={'background':'#3ddc84','color':'#0d0f0e','fontWeight':'700'}),
+                ]),
+            ])
+        ])
+    ]),
+
+    # MODAL HISTÓRICO DRE
+    html.Div(id='modal-history-overlay', style={'display':'none'}, children=[
+        html.Div(className='modal-overlay', children=[
+            html.Div(className='modal-box', style={'maxWidth':'520px','maxHeight':'70vh','overflowY':'auto'}, children=[
+                html.Button("✕", id='btn-history-close', className='modal-close'),
+                html.Div("🔍 Buscar DRE por Período", className='modal-title'),
+                html.Div("Filtre e carregue um DRE salvo anteriormente", className='modal-sub'),
+                html.Div(style={'display':'flex','gap':'12px','marginTop':'20px','alignItems':'flex-end'}, children=[
+                    html.Div(style={'flex':'1'}, children=[
+                        html.Div("Mês", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#8fa894','marginBottom':'6px','textTransform':'uppercase','letterSpacing':'2px'}),
+                        dcc.Dropdown(id='search-mes',
+                            options=[{'label':m,'value':str(i+1).zfill(2)} for i,m in enumerate(
+                                ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+                                 'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'])],
+                            value=None, placeholder='Todos...',
+                            className='dre-dropdown'),
+                    ]),
+                    html.Div(style={'flex':'1'}, children=[
+                        html.Div("Ano", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#8fa894','marginBottom':'6px','textTransform':'uppercase','letterSpacing':'2px'}),
+                        dcc.Dropdown(id='search-ano',
+                            options=[{'label':str(y),'value':str(y)} for y in range(2023,2030)],
+                            value=None, placeholder='Todos...',
+                            className='dre-dropdown'),
+                    ]),
+                ]),
+                html.Div(id='history-list', style={'marginTop':'20px'}),
             ])
         ])
     ]),
@@ -952,6 +1029,8 @@ app.layout = html.Div([
                     html.Div("Ferramentas", className='sidebar-section-label'),
                     html.Div(id='nav-export',   children=[html.Span("⬇️", className='nav-icon'), "Exportar Excel"],   className='nav-item'),
                     html.Div(id='nav-template', children=[html.Span("📄", className='nav-icon'), "Baixar Template CSV"], className='nav-item'),
+                    html.Div(id='nav-save-dre', children=[html.Span("💾", className='nav-icon'), "Salvar DRE"],          className='nav-item'),
+                    html.Div(id='nav-history',  children=[html.Span("🔍", className='nav-icon'), "Buscar DRE"],          className='nav-item'),
                     html.Div(id='nav-config',   children=[html.Span("⚙️", className='nav-icon'), "Configurações"],      className='nav-item'),
                     html.Div(id='nav-logout',   children=[html.Span("🚪", className='nav-icon'), "Sair"],               className='nav-item'),
                 ]),
@@ -1091,19 +1170,20 @@ def _t3(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 @app.callback(Output('toggle-auto','className'), Input('toggle-auto','n_clicks'), State('toggle-auto','className'), prevent_initial_call=True)
 def _t4(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 
-# EXPORTAR EXCEL
+# EXPORTAR EXCEL — DRE REAL
 @app.callback(
     Output('download-excel','data'),
     Output('toast','children', allow_duplicate=True),
     Output('toast','style', allow_duplicate=True),
     Input('nav-export','n_clicks'),
+    State('dre-store','data'),
     prevent_initial_call=True,
 )
-def export_excel(n):
+def export_excel(n, dre_data):
     if not n or n < 1:
         raise dash.exceptions.PreventUpdate
-    data = gerar_excel()
-    fname = f"GUAPO_ERP_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    data = gerar_excel(dre_data or {})
+    fname = f"GUAPO_DRE_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     toast = html.Div([
         html.Span("✓", style={'color':'#3ddc84','fontWeight':'700','fontSize':'16px'}),
         html.Span(f" Excel exportado — {fname}",
@@ -1213,7 +1293,8 @@ def fill_dre_from_csv(csv_data):
     for fid in _ALL_DRE_FIELD_IDS:
         key = _field_id_to_key(fid)
         val = csv_data.get(key)
-        results.append(val if val is not None and val != 0 else None)
+        # Return the value if present (including 0), None only if key missing entirely
+        results.append(val if val is not None else None)
     return results
 
 
@@ -1591,34 +1672,8 @@ def make_fig_acum():
 @app.callback(
     Output('main-content','children'),
     Input('active-tab','data'),
-    Input('csv-store','data'),
-    Input('dre-store','data'),
 )
-def render_content(tab, csv_data, dre_data):
-    if dre_data is None: dre_data = {}
-    csv_loaded = bool(csv_data)
-    csv_fname  = csv_data.get('_filename', '') if isinstance(csv_data, dict) else ''
-
-    upload_bar = dcc.Upload(
-        id='upload-data',
-        children=html.Div(style={'display':'flex','alignItems':'center','justifyContent':'space-between','width':'100%','gap':'16px'}, children=[
-            html.Div(style={'display':'flex','alignItems':'center','gap':'12px'}, children=[
-                html.Span("⬆", className='upload-icon'),
-                html.Span([
-                    "Arraste ou clique para importar o ",
-                    html.Strong("DRE (.csv)"),
-                    " — campos preenchidos automaticamente"
-                ], className='upload-text'),
-            ]),
-            html.Div(
-                "✓ CSV CARREGADO" if csv_loaded else "AGUARDANDO CSV",
-                className=f"upload-status {'loaded' if csv_loaded else ''}",
-            ),
-        ]),
-        className='upload-area',
-        multiple=False,
-    )
-
+def render_content(tab):
     # ── INDICADORES ────────────────────────────────────────────────────────────
     if tab in ('tab-ind', None):
         total_rec = sum(RECEITA)
@@ -1626,7 +1681,6 @@ def render_content(tab, csv_data, dre_data):
         total_luc = sum(LUCRO)
         margem    = total_luc / total_rec * 100
         return html.Div([
-            upload_bar,
             html.Div(className='section-header', children=[
                 html.Div([
                     html.Div("Resultados Consolidados", className='section-eyebrow'),
@@ -1675,7 +1729,6 @@ def render_content(tab, csv_data, dre_data):
     # ── GRÁFICOS ───────────────────────────────────────────────────────────────
     elif tab == 'tab-charts':
         return html.Div([
-            upload_bar,
             html.Div(className='section-header', children=[
                 html.Div([
                     html.Div("Visualização de Dados", className='section-eyebrow'),
@@ -1725,7 +1778,6 @@ def render_content(tab, csv_data, dre_data):
                 html.Td(html.Span(t['status'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'10px','fontWeight':'700','color':sc,'background':f'rgba({s_rgb},0.1)','fontFamily':"'Space Mono',monospace",'letterSpacing':'1px'}), style={'padding':'13px 20px'}),
             ]))
         return html.Div([
-            upload_bar,
             html.Div(className='section-header', children=[
                 html.Div([
                     html.Div("Histórico Financeiro", className='section-eyebrow'),
@@ -1755,6 +1807,195 @@ def render_content(tab, csv_data, dre_data):
 
     return html.Div("Selecione uma aba.", style={'color':'#8fa894','padding':'40px'})
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODAL SALVAR DRE — abrir / fechar
+# ══════════════════════════════════════════════════════════════════════════════
+@app.callback(
+    Output('modal-save-overlay','style'),
+    Input('nav-save-dre','n_clicks'),
+    Input('btn-save-close','n_clicks'),
+    Input('btn-save-cancel','n_clicks'),
+    Input('btn-save-confirm','n_clicks'),
+    prevent_initial_call=True,
+)
+def toggle_save_modal(*_):
+    if ctx.triggered_id == 'nav-save-dre':
+        return {'display':'block'}
+    return {'display':'none'}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SALVAR DRE NO LOG
+# ══════════════════════════════════════════════════════════════════════════════
+@app.callback(
+    Output('dre-log',    'data'),
+    Output('save-status','children'),
+    Input('btn-save-confirm','n_clicks'),
+    State('save-mes',   'value'),
+    State('save-ano',   'value'),
+    State('dre-store',  'data'),
+    State('dre-log',    'data'),
+    prevent_initial_call=True,
+)
+def save_dre_to_log(n, mes, ano, dre_data, log):
+    if not n:
+        raise dash.exceptions.PreventUpdate
+    if not mes or not ano:
+        return dash.no_update, "⚠ Selecione mês e ano antes de salvar."
+    if not dre_data:
+        return dash.no_update, "⚠ Nenhum dado no DRE para salvar."
+
+    log = log or {}
+    key = f"{ano}-{mes}"
+    MESES_PT = {'01':'Janeiro','02':'Fevereiro','03':'Março','04':'Abril',
+                '05':'Maio','06':'Junho','07':'Julho','08':'Agosto',
+                '09':'Setembro','10':'Outubro','11':'Novembro','12':'Dezembro'}
+    label = f"{MESES_PT.get(mes, mes)} / {ano}"
+    log[key] = {**dre_data, '_label': label, '_key': key,
+                '_saved_at': datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}
+    return log, f"✓ DRE de {label} salvo com sucesso!"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODAL HISTÓRICO — abrir / fechar
+# ══════════════════════════════════════════════════════════════════════════════
+@app.callback(
+    Output('modal-history-overlay','style'),
+    Input('nav-history',     'n_clicks'),
+    Input('btn-history-close','n_clicks'),
+    prevent_initial_call=True,
+)
+def toggle_history_modal(*_):
+    if ctx.triggered_id == 'nav-history':
+        return {'display':'block'}
+    return {'display':'none'}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RENDERIZA LISTA DE HISTÓRICO COM FILTRO
+# ══════════════════════════════════════════════════════════════════════════════
+@app.callback(
+    Output('history-list','children'),
+    Input('modal-history-overlay','style'),
+    Input('search-mes','value'),
+    Input('search-ano','value'),
+    State('dre-log','data'),
+    prevent_initial_call=True,
+)
+def render_history_list(style, mes_filter, ano_filter, log):
+    if not log:
+        return html.Div("Nenhum DRE salvo ainda. Use 💾 Salvar DRE para registrar um período.",
+                        style={'color':'#4d5e52','fontFamily':"'Space Mono',monospace",'fontSize':'11px',
+                               'padding':'20px','textAlign':'center'})
+
+    def fmt_val(d, key):
+        vv = d.get(key, 0) or 0
+        return f"R$ {vv:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+
+    rows = []
+    for key in sorted(log.keys(), reverse=True):
+        entry = log[key]
+        kano, kmes = key.split('-')
+        if mes_filter and kmes != mes_filter:
+            continue
+        if ano_filter and kano != ano_filter:
+            continue
+
+        # Calcs
+        rv  = (entry.get('venda_vista',0) or 0) + (entry.get('venda_prazo',0) or 0)
+        rv += sum(entry.get(k,0) or 0 for k in ['or_juros','or_alug','or_outras','or_fundos','or_bonif'])
+        cp  = sum(entry.get(k,0) or 0 for k in ['c_bebidas','c_bolos','c_carnes','c_cigarros','c_conv',
+                  'c_estcoz','c_picoles','c_salgados','c_insumos','c_embal','c_recarga','c_bichos','c_buffet'])
+        cf  = sum(entry.get(k,0) or 0 for k in ['cf_energia','cf_tel','cf_agua','cf_iptu','cf_sal',
+                  'cf_enc','cf_imp','cf_seg','cf_diar'])
+        cv  = sum(entry.get(k,0) or 0 for k in ['cv_sist','cv_terc','cv_exped','cv_honor','cv_manut',
+                  'cv_viag','cv_taxas','cv_unif','cv_limp','cv_alug','cv_caixa','cv_mora','cv_banco',
+                  'cv_cart','cv_brindes','cv_utens','cv_veic','cv_segpred','cv_gerais','cv_gas',
+                  'cv_estoque','cv_comiss'])
+        lucro = rv - cp - cf - cv
+        margem_pct = f"{lucro/rv*100:.1f}%" if rv else "—"
+
+        def rbr(val):
+            s = f"R$ {val:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+            return s
+
+        row = html.Div(style={
+            'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
+            'borderRadius':'10px','padding':'16px 20px','marginBottom':'10px',
+        }, children=[
+            html.Div(style={'display':'flex','justifyContent':'space-between','alignItems':'center','marginBottom':'12px'}, children=[
+                html.Div(children=[
+                    html.Div(entry.get('_label', key), style={
+                        'fontFamily':"'Playfair Display',serif",'fontSize':'16px',
+                        'fontWeight':'700','color':'#e8ede9',
+                    }),
+                    html.Div(f"Salvo em {entry.get('_saved_at','')}",
+                             style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','marginTop':'2px'}),
+                ]),
+                html.Button("📂 Carregar", id={'type':'btn-load-dre','index':key},
+                    style={
+                        'background':'rgba(61,220,132,0.1)','border':'1px solid rgba(61,220,132,0.3)',
+                        'color':'#3ddc84','padding':'7px 14px','borderRadius':'6px','cursor':'pointer',
+                        'fontFamily':"'Space Mono',monospace",'fontSize':'10px','fontWeight':'700',
+                    }),
+            ]),
+            html.Div(style={'display':'grid','gridTemplateColumns':'1fr 1fr 1fr 1fr','gap':'8px'}, children=[
+                html.Div(style={'background':'rgba(61,220,132,0.06)','borderRadius':'6px','padding':'8px 12px'}, children=[
+                    html.Div("Receita", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','textTransform':'uppercase','letterSpacing':'2px'}),
+                    html.Div(rbr(rv), style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#3ddc84','marginTop':'3px','fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':'rgba(255,92,92,0.05)','borderRadius':'6px','padding':'8px 12px'}, children=[
+                    html.Div("Compras", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','textTransform':'uppercase','letterSpacing':'2px'}),
+                    html.Div(rbr(cp), style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#ff5c5c','marginTop':'3px','fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':'rgba(255,92,92,0.05)','borderRadius':'6px','padding':'8px 12px'}, children=[
+                    html.Div("Custos", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','textTransform':'uppercase','letterSpacing':'2px'}),
+                    html.Div(rbr(cf+cv), style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#ff5c5c','marginTop':'3px','fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':'rgba(201,168,76,0.07)','borderRadius':'6px','padding':'8px 12px'}, children=[
+                    html.Div(f"Lucro · {margem_pct}", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','textTransform':'uppercase','letterSpacing':'2px'}),
+                    html.Div(rbr(lucro), style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px',
+                        'color':'#3ddc84' if lucro >= 0 else '#ff5c5c','marginTop':'3px','fontWeight':'700'}),
+                ]),
+            ]),
+        ])
+        rows.append(row)
+
+    if not rows:
+        return html.Div("Nenhum DRE encontrado para o filtro selecionado.",
+                        style={'color':'#4d5e52','fontFamily':"'Space Mono',monospace",'fontSize':'11px',
+                               'padding':'20px','textAlign':'center'})
+    return rows
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CARREGAR DRE DO HISTÓRICO → csv-store (reutiliza fill_dre_from_csv)
+# ══════════════════════════════════════════════════════════════════════════════
+@app.callback(
+    Output('csv-store', 'data', allow_duplicate=True),
+    Output('modal-history-overlay', 'style', allow_duplicate=True),
+    Output('toast', 'children', allow_duplicate=True),
+    Output('toast', 'style', allow_duplicate=True),
+    Input({'type':'btn-load-dre','index':dash.ALL}, 'n_clicks'),
+    State('dre-log','data'),
+    prevent_initial_call=True,
+)
+def load_dre_from_history(n_clicks_list, log):
+    if not any(n for n in n_clicks_list if n):
+        raise dash.exceptions.PreventUpdate
+    triggered = ctx.triggered_id
+    if not triggered:
+        raise dash.exceptions.PreventUpdate
+    key = triggered['index']
+    entry = (log or {}).get(key)
+    if not entry:
+        raise dash.exceptions.PreventUpdate
+    label = entry.get('_label', key)
+    toast = html.Div([
+        html.Span("📂", style={'fontSize':'16px'}),
+        html.Span(f" DRE de {label} carregado no formulário",
+                  style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}),
+    ], className='toast')
+    # Strip metadata keys before loading into csv-store
+    clean = {k: v for k, v in entry.items() if not k.startswith('_')}
+    return clean, {'display':'none'}, toast, {'display':'block'}
 
 # ── INICIALIZAÇÃO ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
