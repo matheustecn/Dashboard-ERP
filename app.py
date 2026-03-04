@@ -829,8 +829,7 @@ app.index_string = '''<!DOCTYPE html>
             .btn-danger:hover{background:rgba(255,92,92,0.12);transform:translateY(-1px)}
             .toast{position:fixed;bottom:28px;right:28px;background:var(--bg3);border:1px solid var(--border-lit);border-radius:10px;padding:14px 20px;display:flex;align-items:center;gap:12px;font-size:13px;color:var(--text);box-shadow:var(--shadow-lg);z-index:9999;animation:toast-in 0.4s cubic-bezier(0.16,1,0.3,1)}
             @keyframes toast-in{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-            @keyframes toast-out{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(20px)}}
-            .toast-hide{animation:toast-out 0.35s cubic-bezier(0.16,1,0.3,1) forwards}
+            
             .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:200;display:flex;align-items:center;justify-content:center;animation:fade-in 0.2s ease}
             @keyframes fade-in{from{opacity:0}to{opacity:1}}
             .modal-box{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:36px;width:500px;box-shadow:var(--shadow-lg);position:relative;animation:modal-in 0.35s cubic-bezier(0.16,1,0.3,1)}
@@ -869,7 +868,6 @@ app.layout = html.Div([
     dcc.Store(id='dre-log',     data={}),        # {"2025-01": {...dre_data}, ...}
     dcc.Store(id='search-result', data=None),    # DRE loaded from history
     dcc.Interval(id='clock-tick',  interval=60_000, n_intervals=0),
-    dcc.Interval(id='toast-timer', interval=3500, n_intervals=0, disabled=True),
     dcc.Download(id='download-excel'),
     dcc.Download(id='download-template'),
 
@@ -2001,29 +1999,23 @@ def load_dre_from_history(n_clicks_list, log):
     return clean, {'display':'none'}, toast, {'display':'block'}
 
 
-# ── AUTO-DISMISS TOAST ────────────────────────────────────────────────────────
-@app.callback(
-    Output('toast-timer','disabled'),
-    Output('toast-timer','n_intervals'),
-    Input('toast','style'),
+# ── AUTO-DISMISS TOAST (clientside) ──────────────────────────────────────────
+app.clientside_callback(
+    """
+    function(style) {
+        if (style && style.display === 'block') {
+            setTimeout(function() {
+                var el = document.getElementById('toast');
+                if (el) el.style.display = 'none';
+            }, 3500);
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('toast', 'style', allow_duplicate=True),
+    Input('toast', 'style'),
     prevent_initial_call=True,
 )
-def arm_toast_timer(style):
-    # Start the 3.5s countdown whenever toast becomes visible
-    if style and style.get('display') == 'block':
-        return False, 0        # enable timer, reset count
-    return True, 0             # keep disabled
-
-@app.callback(
-    Output('toast','style',    allow_duplicate=True),
-    Output('toast-timer','disabled', allow_duplicate=True),
-    Input('toast-timer','n_intervals'),
-    prevent_initial_call=True,
-)
-def dismiss_toast(n):
-    if n and n >= 1:
-        return {'display':'none'}, True   # hide toast, disable timer
-    raise dash.exceptions.PreventUpdate
 
 # ── INICIALIZAÇÃO ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
