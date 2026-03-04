@@ -888,6 +888,32 @@ app.index_string = '''<!DOCTYPE html>
             .csv-info{background:rgba(61,220,132,0.04);border:1px solid rgba(61,220,132,0.12);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-family:'Space Mono',monospace;font-size:10px;color:var(--text-dim);line-height:1.7}
             .csv-info strong{color:var(--green)}
         </style>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        function attachBRL() {
+            document.querySelectorAll('.dre-card input[type=text]').forEach(function(inp) {
+                if (inp._brlFmt) return;
+                inp._brlFmt = true;
+                inp.addEventListener('focus', function() {
+                    var raw = this.value.replace(/[.]/g, '').replace(',', '.');
+                    var num = parseFloat(raw);
+                    this.value = (!isNaN(num) && num !== 0) ? num.toFixed(2).replace('.', ',') : '';
+                });
+                inp.addEventListener('blur', function() {
+                    var raw = this.value.replace(/[.]/g, '').replace(',', '.');
+                    var num = parseFloat(raw);
+                    if (!isNaN(num)) {
+                        this.value = num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+                    }
+                });
+            });
+        }
+        // Run on load and observe DOM changes
+        attachBRL();
+        new MutationObserver(attachBRL).observe(document.body, {childList:true, subtree:true});
+    });
+    </script>
     </head>
     <body>
         {%app_entry%}
@@ -2060,39 +2086,6 @@ def load_dre_from_history(n_clicks_list, log):
 
 
 # ── FORMAT INPUTS AS BRL ON BLUR ─────────────────────────────────────────────
-app.clientside_callback(
-    """
-    function(_) {
-        document.querySelectorAll('.dre-card input[type=text]').forEach(function(inp) {
-            if (inp._brlFmt) return;
-            inp._brlFmt = true;
-
-            inp.addEventListener('focus', function() {
-                var raw = this.value.replace(/\./g,'').replace(',','.');
-                var num = parseFloat(raw);
-                if (!isNaN(num) && num !== 0) {
-                    this.value = num.toFixed(2).replace('.', ',');
-                } else {
-                    this.value = '';
-                }
-            });
-
-            inp.addEventListener('blur', function() {
-                var raw = this.value.replace(/\./g,'').replace(',','.');
-                var num = parseFloat(raw);
-                if (!isNaN(num)) {
-                    this.value = num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
-                }
-            });
-        });
-        return window.dash_clientside.no_update;
-    }
-    """,
-    Output('dre-tab-wrapper', 'data-fmt', allow_duplicate=True),
-    Input('dre-tab-wrapper', 'id'),
-    prevent_initial_call=False,
-)
-
 # ── AUTO-DISMISS TOAST (clientside) ──────────────────────────────────────────
 app.clientside_callback(
     """
