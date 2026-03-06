@@ -244,20 +244,8 @@ def classificar_categoria(tipo, valor):
         return mapa.get(tipo, "SAÍDA OPERACIONAL")
 
 def _bytes_para_xlsx(content_bytes):
-    """
-    Recebe bytes de qualquer Excel (.xls ou .xlsx).
-    Estratégias em ordem:
-      1. Já é .xlsx (assinatura PK) → devolve direto
-      2. xlrd  → converte .xls → .xlsx via openpyxl
-      3. pandas com engine=xlrd → salva com openpyxl
-      4. LibreOffice headless
-      5. Erro amigável pedindo para salvar como .xlsx
-    """
-    # 1. Já é xlsx
     if content_bytes[:2] == b'PK':
         return content_bytes
-
-    # 2. xlrd direto
     try:
         import xlrd
         xls_wb = xlrd.open_workbook(file_contents=content_bytes)
@@ -285,9 +273,8 @@ def _bytes_para_xlsx(content_bytes):
     except Exception:
         pass
 
-    # 3. pandas + xlrd engine
     try:
-        import xlrd  # noqa — só para garantir que está disponível
+        import xlrd  # noqa
         df_raw = pd.read_excel(io.BytesIO(content_bytes), engine='xlrd', header=None)
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as writer:
@@ -297,7 +284,6 @@ def _bytes_para_xlsx(content_bytes):
     except Exception:
         pass
 
-    # 4. LibreOffice
     try:
         import tempfile, subprocess
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -317,7 +303,6 @@ def _bytes_para_xlsx(content_bytes):
     except Exception:
         pass
 
-    # 5. Erro amigável
     raise ValueError(
         "Arquivo .xls legado detectado. "
         "Para importar, abra o arquivo no Excel/LibreOffice e salve como .xlsx — "
@@ -326,10 +311,6 @@ def _bytes_para_xlsx(content_bytes):
 
 
 def processar_extrato_excel(content_bytes, skiprows=8):
-    """
-    Lê o Excel do extrato bancário (xls ou xlsx), classifica e retorna um DataFrame tratado.
-    Converte .xls → .xlsx automaticamente via xlrd ou LibreOffice se necessário.
-    """
     content_bytes = _bytes_para_xlsx(content_bytes)
 
     COLUNAS_ESPERADAS = ["Data", "Descrição", "Documento", "Valor (R$)", "Saldo (R$)"]
@@ -356,18 +337,15 @@ def processar_extrato_excel(content_bytes, skiprows=8):
         else:
             raise ValueError("Estrutura do extrato não reconhecida. Verifique o arquivo.")
 
-    # Remove linhas sem data ou valor
     df = df.dropna(subset=["Data", "Valor (R$)"])
     df["Valor (R$)"] = pd.to_numeric(df["Valor (R$)"], errors="coerce")
     df = df.dropna(subset=["Valor (R$)"])
 
-    # Classificações
     df["Tipo"]               = df["Descrição"].apply(classificar_tipo)
     df["Documento_Extraido"] = df["Descrição"].apply(extrair_documento)
     df["Categoria"]          = df.apply(lambda r: classificar_categoria(r["Tipo"], r["Valor (R$)"]), axis=1)
     df["Entrada/Saída"]      = df["Valor (R$)"].apply(lambda x: "ENTRADA" if x > 0 else "SAÍDA")
 
-    # Tratamento de Estorno PIX 1:1
     def extrair_id(desc):
         m = re.search(r'\d+', str(desc))
         return m.group() if m else ""
@@ -384,7 +362,6 @@ def processar_extrato_excel(content_bytes, skiprows=8):
             df.loc[idx, "Tipo"] = "ESTORNO"
             df.loc[recebimentos.index[0], "Tipo"] = "ESTORNO"
 
-    # Formatar data
     try:
         df["Data"] = pd.to_datetime(df["Data"]).dt.strftime("%d/%m/%Y")
     except Exception:
@@ -405,7 +382,6 @@ def processar_extrato_excel(content_bytes, skiprows=8):
 
 
 def gerar_excel_conciliacao(df):
-    """Gera o Excel formatado da conciliação bancária."""
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_exp = df.copy()
@@ -873,14 +849,13 @@ def _build_conciliacao_tab():
     return html.Div([
         dcc.Upload(
             id='upload-extrato',
+            # ── CORREÇÃO: removida a linha "Colunas esperadas..." ──
             children=html.Div(style={'display':'flex','alignItems':'center','justifyContent':'space-between','width':'100%','gap':'16px'}, children=[
                 html.Div(style={'display':'flex','alignItems':'center','gap':'12px'}, children=[
                     html.Span("🏦", style={'fontSize':'20px'}),
                     html.Div([
                         html.Div(["Arraste ou clique para importar o ", html.Strong("Extrato Bancário (.xlsx / .xls)")],
                                  style={'fontSize':'13px','color':'#8fa894'}),
-                        html.Div("Colunas esperadas: Data · Descrição · Documento · Valor (R$) · Saldo (R$) — a partir da linha 9",
-                                 style={'fontSize':'10px','color':'#4d5e52','marginTop':'3px','fontFamily':"'Space Mono',monospace"}),
                     ]),
                 ]),
                 html.Div(id='extrato-status-text', children="AGUARDANDO EXTRATO", className='upload-status'),
@@ -957,7 +932,6 @@ IA_SUGESTOES = [
 
 def _build_ia_tab():
     return html.Div([
-        # Header
         html.Div(className='section-header', style={'marginBottom':'28px'}, children=[
             html.Div([
                 html.Div("Inteligência Artificial", className='section-eyebrow'),
@@ -967,19 +941,15 @@ def _build_ia_tab():
                      style={'fontSize':'12px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
         ]),
 
-        # Layout principal: chat à esquerda, painel direito
         html.Div(style={'display':'grid','gridTemplateColumns':'1fr 320px','gap':'24px','alignItems':'start'}, children=[
 
-            # ── COLUNA CHAT ──────────────────────────────────────────────────
             html.Div([
-                # Janela de mensagens
                 html.Div(id='chat-window', style={
                     'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
                     'borderRadius':'12px','padding':'24px','minHeight':'460px',
                     'maxHeight':'520px','overflowY':'auto','marginBottom':'16px',
                     'display':'flex','flexDirection':'column','gap':'16px',
                 }, children=[
-                    # Mensagem de boas-vindas
                     html.Div(style={'display':'flex','gap':'12px','alignItems':'flex-start'}, children=[
                         html.Div("🤖", style={'fontSize':'22px','flexShrink':'0','marginTop':'2px'}),
                         html.Div(style={
@@ -1000,7 +970,6 @@ def _build_ia_tab():
                     ]),
                 ]),
 
-                # Input + botão
                 html.Div(style={
                     'display':'flex','gap':'10px','alignItems':'flex-end',
                 }, children=[
@@ -1042,9 +1011,7 @@ def _build_ia_tab():
                 }),
             ]),
 
-            # ── COLUNA DIREITA ───────────────────────────────────────────────
             html.Div([
-                # Sugestões
                 html.Div(style={
                     'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
                     'borderRadius':'12px','padding':'20px','marginBottom':'16px',
@@ -1071,7 +1038,6 @@ def _build_ia_tab():
                     ]),
                 ]),
 
-                # Status dos dados
                 html.Div(id='ia-data-status', style={
                     'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
                     'borderRadius':'12px','padding':'20px',
@@ -1250,7 +1216,6 @@ app.index_string = '''<!DOCTYPE html>
             .dre-dropdown .Select-option{color:#8fa894!important;background:#131714!important}
             .dre-dropdown .Select-option.is-focused{background:#1a1f1c!important;color:#e8ede9!important}
             .dre-dropdown .Select-value-label{color:#e8ede9!important}
-            /* ── CHAT IA ── */
             #chat-window::-webkit-scrollbar{width:4px}
             #chat-window::-webkit-scrollbar-track{background:transparent}
             #chat-window::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:2px}
@@ -1308,9 +1273,8 @@ app.layout = html.Div([
     dcc.Store(id='active-tab',    data='tab-home'),
     dcc.Store(id='dre-log',       data={}),
     dcc.Store(id='extrato-store', data=None),
-    # ── Store de navegação — recebe o ID do nav desejado ──────────────────────
     dcc.Store(id='nav-request',   data=None),
-    dcc.Store(id='chat-history',  data=[]),   # histórico de mensagens do chat IA
+    dcc.Store(id='chat-history',  data=[]),
     dcc.Interval(id='clock-tick', interval=60_000, n_intervals=0),
     dcc.Download(id='download-excel'),
     dcc.Download(id='download-template'),
@@ -1539,14 +1503,16 @@ def do_login(n, u, p):
 def do_logout(_):
     return {'display':'flex'}, {'display':'none'}
 
+# ── CORREÇÃO: Horário de Brasília (UTC-3) ─────────────────────────────────────
 @app.callback(Output('topbar-date','children'), Input('clock-tick','n_intervals'))
 def update_clock(_):
-    return datetime.datetime.now().strftime('%d/%m/%Y  %H:%M')
+    brasilia_tz = datetime.timezone(datetime.timedelta(hours=-3))
+    now = datetime.datetime.now(brasilia_tz)
+    return now.strftime('%d/%m/%Y  %H:%M')
 
 
 # ─── helpers de navegação ────────────────────────────────────────────────────
 def _build_home_content():
-    """Constrói a home com botões usando padrão de ID dinâmico (dict)."""
     return html.Div([
         html.Div(style={'marginBottom':'36px'}, children=[
             html.Div("BEM-VINDO AO SISTEMA", style={
@@ -1606,7 +1572,6 @@ def _build_home_content():
     ])
 
 def _home_feature_card(icon, title, desc, nav_target, badge=None, badge_cls="up"):
-    """Card da home com botão usando ID dinâmico (dict) — evita duplicação de IDs."""
     return html.Div(className='home-feature-card', children=[
         html.Div(style={
             'position':'absolute','top':0,'left':0,'right':0,'height':'2px',
@@ -1624,7 +1589,6 @@ def _home_feature_card(icon, title, desc, nav_target, badge=None, badge_cls="up"
             'fontSize':'12px','color':'#8fa894','lineHeight':'1.6',
             'fontFamily':"'Sora',sans-serif",'flex':'1',
         }),
-        # ── Botão com ID dinâmico (dict) para padrão ALL ──────────────────────
         html.Button(
             "Acessar →",
             id={'type': 'home-nav-btn', 'index': nav_target},
@@ -1658,7 +1622,7 @@ def _build_charts_content():
             html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
                 html.Div(style={'padding':'16px 22px 12px','borderBottom':'1px solid rgba(255,255,255,0.06)','background':'#1a1f1c'}, children=[
                     html.Div("COMPOSIÇÃO DE RECEITAS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#3ddc84','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'3px'}),
-                    html.Div("Vendas + Outras Receitas = Receita Total", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
+                    html.Div("Vendas à Vista + Vendas a Prazo = Receita Total", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
                 ]),
                 dcc.Graph(id='fig-receitas', config={'displayModeBar':False}, style={'height':'340px'}),
             ]),
@@ -1711,7 +1675,6 @@ def _nav_result(tab, triggered_nav):
             show if is_ia   else hide)
 
 
-# ── Callback unificado de navegação ──────────────────────────────────────────
 @app.callback(
     Output('nav-ind','className'),
     Output('nav-charts','className'),
@@ -1726,16 +1689,13 @@ def _nav_result(tab, triggered_nav):
     Output('dre-tab-wrapper','style'),
     Output('conc-tab-wrapper','style'),
     Output('ia-tab-wrapper','style'),
-    # sidebar direto
     Input('nav-ind',    'n_clicks'),
     Input('nav-charts', 'n_clicks'),
     Input('nav-dre',    'n_clicks'),
     Input('nav-txn',    'n_clicks'),
     Input('nav-conc',   'n_clicks'),
     Input('nav-ia',     'n_clicks'),
-    # botões da home com padrão ALL (dict IDs)
     Input({'type': 'home-nav-btn', 'index': ALL}, 'n_clicks'),
-    # csv import
     Input('csv-store', 'data'),
     prevent_initial_call=True,
 )
@@ -1752,7 +1712,6 @@ def nav_click(*args):
         'nav-ia':     'tab-ia',
     }
 
-    # Botão da home (ID dinâmico dict)
     if isinstance(tid, dict) and tid.get('type') == 'home-nav-btn':
         nav_active = tid['index']
         tab = nav_to_tab.get(nav_active, 'tab-home')
@@ -1761,7 +1720,6 @@ def nav_click(*args):
             tab = 'tab-home'
         return _nav_result(tab, nav_active)
 
-    # CSV importado → vai para DRE
     if tid == 'csv-store':
         csv_data = ctx.triggered[0]['value']
         if not csv_data:
@@ -1770,7 +1728,6 @@ def nav_click(*args):
                 'DRE Completo','CSV importado · campos preenchidos automaticamente',
                 html.Div(), hide, show, hide, hide)
 
-    # Sidebar nav item
     if tid in nav_to_tab:
         tab = nav_to_tab[tid]
         return _nav_result(tab, tid)
@@ -1778,7 +1735,6 @@ def nav_click(*args):
     raise dash.exceptions.PreventUpdate
 
 
-# MODAL CONFIG
 @app.callback(
     Output('modal-config-overlay','style'),
     Input('nav-config','n_clicks'),
@@ -2055,45 +2011,89 @@ def fig_debitos(d):
             fig.add_annotation(x=label, y=val, text=f"R$ {val:,.0f}".replace(',','X').replace('.', ',').replace('X','.'), showarrow=False, yshift=10, font=dict(size=11,color='#e8ede9',family='Space Mono'))
     return fig
 
+# ── CORREÇÃO: Gráfico de receitas — Vendas à Vista + Vendas a Prazo = Receita Total ──
 @app.callback(Output('fig-receitas', 'figure'), Input('dre-store', 'data'))
 def fig_receitas(d):
     if not d: d = {}
-    vendas_merc  = {'Vendas à Vista': d.get('venda_vista',0), 'Vendas a Prazo': d.get('venda_prazo',0)}
-    vendas_grupo = {
-        'Bolos e Tortas': d.get('g_bolos',0), 'Buffet': d.get('g_buffet',0),
-        'Cafés e Sucos': d.get('g_cafes',0), 'Lanches': d.get('g_lanches',0),
-        'Porções': d.get('g_porcoes',0), 'Salgados': d.get('g_salgados',0),
-        'Drinks': d.get('g_drinks',0), 'Conveniência': d.get('g_conv',0),
-        'Cigarros': d.get('g_cigarros',0), 'Bebidas': d.get('g_bebidas',0),
-        'Picolé': d.get('g_picole',0), 'Est. Cozinha': d.get('g_estcoz',0),
-        'Bichos/Brinq.': d.get('g_bichos',0), 'Carnes': d.get('g_carnes',0),
-    }
-    outras_rec = {
-        'Juros Recebidos': d.get('or_juros',0), 'Aluguéis': d.get('or_alug',0),
-        'Outras Receitas': d.get('or_outras',0), 'Fundos Invest.': d.get('or_fundos',0),
-        'Bonificações': d.get('or_bonif',0),
-    }
-    total_merc   = sum(vendas_merc.values())
-    total_grupo  = sum(vendas_grupo.values())
-    total_outras = sum(outras_rec.values())
-    total_rec    = total_merc + total_grupo + total_outras
+
+    venda_vista = d.get('venda_vista', 0) or 0
+    venda_prazo = d.get('venda_prazo', 0) or 0
+    outras_rec  = sum([
+        d.get('or_juros',  0) or 0,
+        d.get('or_alug',   0) or 0,
+        d.get('or_outras', 0) or 0,
+        d.get('or_fundos', 0) or 0,
+        d.get('or_bonif',  0) or 0,
+    ])
+    total_rec = venda_vista + venda_prazo + outras_rec
+
     fig = go.Figure()
-    for nome, val in vendas_merc.items():
-        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Vendas Mercadorias'], y=[val], marker_color='rgba(61,220,132,0.8)',  marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
-    for nome, val in vendas_grupo.items():
-        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Vendas por Grupo'],   y=[val], marker_color='rgba(61,180,100,0.75)', marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
-    for nome, val in outras_rec.items():
-        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Outras Receitas'],    y=[val], marker_color='rgba(92,158,255,0.8)',  marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
-    fig.add_trace(go.Bar(name='Receita Total', x=['Receita Total'], y=[total_rec], marker_color='rgba(61,220,132,0.95)', marker_line_width=0, showlegend=False, hovertemplate='<b>Receita Total</b><br>R$ %{y:,.2f}<extra></extra>'))
+
+    fig.add_trace(go.Bar(
+        name='Vendas à Vista',
+        x=['Vendas à Vista'],
+        y=[venda_vista],
+        marker_color='rgba(61,220,132,0.85)',
+        marker_line_width=0,
+        showlegend=False,
+        hovertemplate='<b>Vendas à Vista</b><br>R$ %{y:,.2f}<extra></extra>',
+    ))
+
+    fig.add_trace(go.Bar(
+        name='Vendas a Prazo',
+        x=['Vendas a Prazo'],
+        y=[venda_prazo],
+        marker_color='rgba(45,180,110,0.85)',
+        marker_line_width=0,
+        showlegend=False,
+        hovertemplate='<b>Vendas a Prazo</b><br>R$ %{y:,.2f}<extra></extra>',
+    ))
+
+    if outras_rec > 0:
+        fig.add_trace(go.Bar(
+            name='Outras Receitas',
+            x=['Outras Receitas'],
+            y=[outras_rec],
+            marker_color='rgba(92,158,255,0.8)',
+            marker_line_width=0,
+            showlegend=False,
+            hovertemplate='<b>Outras Receitas</b><br>R$ %{y:,.2f}<extra></extra>',
+        ))
+
+    fig.add_trace(go.Bar(
+        name='Receita Total',
+        x=['Receita Total'],
+        y=[total_rec],
+        marker_color='rgba(61,220,132,0.95)',
+        marker_line_width=0,
+        showlegend=False,
+        hovertemplate='<b>Receita Total</b><br>R$ %{y:,.2f}<extra></extra>',
+    ))
+
     layout = dict(CHART_LAYOUT)
-    layout['barmode']    = 'stack'
-    layout['margin']     = dict(l=16,r=16,t=16,b=80)
+    layout['barmode']    = 'group'
+    layout['margin']     = dict(l=16, r=16, t=16, b=80)
     layout['showlegend'] = False
-    layout['xaxis']      = dict(gridcolor='rgba(255,255,255,0.04)', tickfont=dict(size=11,color='#e8ede9',family='Sora'))
+    layout['xaxis']      = dict(
+        gridcolor='rgba(255,255,255,0.04)',
+        tickfont=dict(size=11, color='#e8ede9', family='Sora'),
+    )
     fig.update_layout(**layout)
-    for label, val in [('Vendas Mercadorias',total_merc),('Vendas por Grupo',total_grupo),('Outras Receitas',total_outras),('Receita Total',total_rec)]:
+
+    for label, val in [
+        ('Vendas à Vista',  venda_vista),
+        ('Vendas a Prazo',  venda_prazo),
+        ('Outras Receitas', outras_rec),
+        ('Receita Total',   total_rec),
+    ]:
         if val > 0:
-            fig.add_annotation(x=label, y=val, text=f"R$ {val:,.0f}".replace(',','X').replace('.', ',').replace('X','.'), showarrow=False, yshift=10, font=dict(size=11,color='#e8ede9',family='Space Mono'))
+            fig.add_annotation(
+                x=label, y=val,
+                text=f"R$ {val:,.0f}".replace(',','X').replace('.', ',').replace('X','.'),
+                showarrow=False, yshift=10,
+                font=dict(size=11, color='#e8ede9', family='Space Mono'),
+            )
+
     return fig
 
 @app.callback(
@@ -2115,7 +2115,6 @@ def update_csv_banner(csv_data):
         html.Div([html.Strong(f"✓ CSV importado · {n} campos preenchidos — "), "você pode editar manualmente."]),
     ], {'borderColor':'rgba(61,220,132,0.3)','background':'rgba(61,220,132,0.06)'}
 
-# MODAL SALVAR DRE
 @app.callback(
     Output('modal-save-overlay','style'),
     Input('nav-save-dre','n_clicks'), Input('btn-save-close','n_clicks'),
@@ -2279,7 +2278,6 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
     df = pd.DataFrame(_json.loads(extrato_json))
     df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0)
 
-    # Filtros
     df_f = df.copy()
     if filtro_tipo and filtro_tipo != 'TODOS':
         df_f = df_f[df_f['Tipo'] == filtro_tipo]
@@ -2288,7 +2286,6 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
     if filtro_busca:
         df_f = df_f[df_f['Descrição'].str.upper().str.contains(filtro_busca.upper(), na=False)]
 
-    # KPIs
     total_entrada = df[df['Valor (R$)'] > 0]['Valor (R$)'].sum()
     total_saida   = df[df['Valor (R$)'] < 0]['Valor (R$)'].sum()
     saldo_periodo = total_entrada + total_saida
@@ -2309,7 +2306,6 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
         kpi_card("Tipos Detectados", str(n_tipos),        "Categorias únicas", "TIPOS",  "wait", "gold"),
     ])
 
-    # Gráficos
     tipo_group = df.groupby('Tipo')['Valor (R$)'].agg(
         Entradas=lambda x: x[x > 0].sum(),
         Saidas=lambda x: abs(x[x < 0].sum())
@@ -2362,7 +2358,6 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
         ]),
     ])
 
-    # Tabela
     rows_html = []
     for _, row in df_f.iterrows():
         val  = float(row['Valor (R$)'])
@@ -2587,12 +2582,10 @@ def update_txn_table(extrato_json):
         df = pd.DataFrame(json.loads(extrato_json))
         df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0)
 
-        # Detectar coluna de data
         data_col = next((c for c in df.columns if 'data' in c.lower() or 'date' in c.lower()), None)
         desc_col = next((c for c in df.columns if 'descri' in c.lower() or 'histor' in c.lower()), None)
         tipo_col = next((c for c in df.columns if 'tipo' in c.lower() or 'categ' in c.lower()), None)
 
-        # Ordena por data desc se possível
         if data_col:
             try:
                 df[data_col] = pd.to_datetime(df[data_col], dayfirst=True, errors='coerce')
@@ -2603,7 +2596,6 @@ def update_txn_table(extrato_json):
 
         total = len(df)
 
-        # Calcula período
         periodo = "Extrato Importado"
         if data_col and total > 0:
             datas_validas = df[data_col].dropna()
@@ -2652,7 +2644,6 @@ def update_txn_table(extrato_json):
         def brl(x): return f"R$ {x:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
 
         return html.Div([
-            # Resumo rápido
             html.Div(style={'display':'grid','gridTemplateColumns':'repeat(4,1fr)','gap':'12px','marginBottom':'20px'}, children=[
                 html.Div(style={'background':'rgba(61,220,132,0.06)','border':'1px solid rgba(61,220,132,0.12)','borderRadius':'10px','padding':'14px 18px'}, children=[
                     html.Div("ENTRADAS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','letterSpacing':'2px','marginBottom':'6px'}),
@@ -2672,7 +2663,6 @@ def update_txn_table(extrato_json):
                 ]),
             ]),
 
-            # Tabela
             html.Div(className='table-card', children=[
                 html.Div(className='table-header', children=[
                     html.Div(periodo, className='table-header-title'),
@@ -2705,7 +2695,6 @@ def update_txn_table(extrato_json):
         )
 
 def _build_contexto_financeiro(dre_data, extrato_json):
-    """Monta resumo financeiro estruturado para contexto da IA."""
     linhas = ["# DADOS FINANCEIROS — REDE GUAPO\n"]
 
     if dre_data:
