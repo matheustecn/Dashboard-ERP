@@ -241,24 +241,55 @@ def classificar_categoria(tipo, valor):
         }
         return mapa.get(tipo, "SAÍDA OPERACIONAL")
 
+def _bytes_para_xlsx(content_bytes):
+    """
+    Recebe bytes de qualquer Excel (.xls ou .xlsx).
+    Se for .xls (BIFF/OLE), converte para .xlsx via LibreOffice e devolve os bytes do .xlsx.
+    Se já for .xlsx (assinatura PK), devolve os bytes originais.
+    """
+    # Assinatura ZIP/XLSX: começa com PK (50 4B)
+    if content_bytes[:2] == b'PK':
+        return content_bytes  # já é xlsx
+
+    # É .xls (OLE2: D0 CF 11 E0) — converter com LibreOffice
+    import tempfile, subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xls_path  = os.path.join(tmpdir, 'extrato.xls')
+        xlsx_path = os.path.join(tmpdir, 'extrato.xlsx')
+        with open(xls_path, 'wb') as f:
+            f.write(content_bytes)
+        subprocess.run(
+            ['libreoffice', '--headless', '--norestore',
+             '--convert-to', 'xlsx:Calc MS Excel 2007 XML',
+             '--outdir', tmpdir, xls_path],
+            capture_output=True, timeout=60
+        )
+        if not os.path.exists(xlsx_path):
+            raise ValueError("Falha ao converter .xls para .xlsx. Verifique se o LibreOffice está instalado.")
+        with open(xlsx_path, 'rb') as f:
+            return f.read()
+
+
 def processar_extrato_excel(content_bytes, skiprows=8):
     """
-    Lê o Excel do extrato bancário, classifica e retorna um DataFrame tratado.
-    Tenta diferentes skiprows caso as colunas esperadas não sejam encontradas.
+    Lê o Excel do extrato bancário (xls ou xlsx), classifica e retorna um DataFrame tratado.
+    Converte .xls → .xlsx automaticamente via LibreOffice se necessário.
     """
+    # Garantir que temos bytes .xlsx
+    content_bytes = _bytes_para_xlsx(content_bytes)
+
     COLUNAS_ESPERADAS = ["Data", "Descrição", "Documento", "Valor (R$)", "Saldo (R$)"]
-    
+
     for skip in [skiprows, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
         try:
-            df = pd.read_excel(io.BytesIO(content_bytes), skiprows=skip)
+            df = pd.read_excel(io.BytesIO(content_bytes), skiprows=skip, engine='openpyxl')
             df.columns = df.columns.str.strip()
             if all(c in df.columns for c in COLUNAS_ESPERADAS):
                 break
         except Exception:
             continue
     else:
-        # Se não encontrou colunas esperadas, tenta ler e renomear as 5 primeiras colunas
-        df = pd.read_excel(io.BytesIO(content_bytes), skiprows=0)
+        df = pd.read_excel(io.BytesIO(content_bytes), skiprows=0, engine='openpyxl')
         df.columns = df.columns.str.strip()
         if len(df.columns) >= 5:
             rename_map = {df.columns[0]: "Data", df.columns[1]: "Descrição",
@@ -1281,7 +1312,7 @@ app.layout = html.Div([
                         html.Div([html.Div(className='status-dot'), "SISTEMA ATIVO"], className='status-chip'),
                     ]),
                 ]),
-                html.Div(id='main-content', className='main-content'),
+                html.Div(id='main-content', className='main-content', style={'display':'block'}),
                 html.Div(id='dre-tab-wrapper',  className='main-content', style={'display':'none'}, children=[_build_dre_tab()]),
                 html.Div(id='conc-tab-wrapper', className='main-content', style={'display':'none'}, children=[
                     html.Div(className='section-header', children=[
@@ -1307,14 +1338,15 @@ app.layout = html.Div([
     Output('screen-login','style'),
     Output('screen-dash','style'),
     Output('out-login','children'),
+    Output('main-content','children', allow_duplicate=True),
     Input('btn-login','n_clicks'),
     State('user','value'), State('pass','value'),
     prevent_initial_call=True,
 )
 def do_login(n, u, p):
     if u == 'admin' and p == '123':
-        return {'display':'none'}, {'display':'block'}, ''
-    return {'display':'flex'}, {'display':'none'}, '✕  Credenciais inválidas'
+        return {'display':'none'}, {'display':'block'}, '', _build_home_content()
+    return {'display':'flex'}, {'display':'none'}, '✕  Credenciais inválidas', dash.no_update
 
 @app.callback(
     Output('screen-login','style', allow_duplicate=True),
@@ -1329,8 +1361,152 @@ def do_logout(_):
 def update_clock(_):
     return datetime.datetime.now().strftime('%d/%m/%Y  %H:%M')
 
+
+# ─── helpers de navegação ────────────────────────────────────────────────────
+def _build_home_content():
+    return html.Div([
+        html.Div(style={'marginBottom':'36px'}, children=[
+            html.Div("BEM-VINDO AO SISTEMA", style={
+                'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#3ddc84',
+                'textTransform':'uppercase','letterSpacing':'4px','marginBottom':'10px',
+            }),
+            html.Div(["REDE ", html.Em("GUAPO", style={'color':'#3ddc84'})], style={
+                'fontFamily':"'Playfair Display',serif",'fontSize':'42px',
+                'fontWeight':'900','color':'#e8ede9','letterSpacing':'-1px','lineHeight':'1',
+                'marginBottom':'10px',
+            }),
+            html.Div("ERP Financeiro · Gestão Estratégica de Resultados", style={
+                'fontFamily':"'Space Mono',monospace",'fontSize':'11px',
+                'color':'#4d5e52','letterSpacing':'1px',
+            }),
+        ]),
+        html.Div(style={
+            'display':'grid','gridTemplateColumns':'repeat(3,1fr)',
+            'gap':'18px','marginBottom':'32px',
+        }, children=[
+            _home_feature_card("📋", "DRE Completo",
+                "Lançamento da Demonstração do Resultado do Exercício. Receitas, compras, custos fixos e variáveis. Cálculos automáticos de margem e lucro.",
+                "dre", badge="PRINCIPAL", badge_cls="up"),
+            _home_feature_card("📊", "Indicadores & KPIs",
+                "Indicadores financeiros reais calculados diretamente do DRE: Receita Total, Margem de Contribuição, Lucro Bruto e Resultado Líquido.",
+                "dre", badge="REAL-TIME", badge_cls="up"),
+            _home_feature_card("📈", "Gráficos & Análises",
+                "Estrutura de custos e composição de receitas em gráficos interativos, gerados automaticamente dos dados do DRE.",
+                "charts", badge="VISUAL", badge_cls="blue"),
+            _home_feature_card("🏦", "Conciliação Bancária",
+                "Importe o extrato bancário (.xls/.xlsx) do Sicredi e classifique automaticamente as transações por tipo.",
+                "conc", badge="AUTOMÁTICO", badge_cls="wait"),
+            _home_feature_card("💳", "Transações Recentes",
+                "Histórico de entradas e saídas com categorias, variações e status dos lançamentos do período.",
+                "txn", badge="HISTÓRICO", badge_cls="wait"),
+            _home_feature_card("📥", "Exportar & Importar",
+                "Exporte o DRE em Excel, baixe o template CSV, salve DREs por período e consulte o histórico.",
+                "export", badge="FERRAMENTAS", badge_cls="blue"),
+        ]),
+        html.Div(style={
+            'background':'rgba(61,220,132,0.04)','border':'1px solid rgba(61,220,132,0.1)',
+            'borderRadius':'10px','padding':'18px 24px',
+            'display':'flex','alignItems':'center','gap':'16px',
+        }, children=[
+            html.Div("💡", style={'fontSize':'20px'}),
+            html.Div([
+                html.Div("Como começar", style={
+                    'fontFamily':"'Space Mono',monospace",'fontSize':'10px',
+                    'color':'#3ddc84','textTransform':'uppercase','letterSpacing':'2px','marginBottom':'4px',
+                }),
+                html.Div(
+                    "Acesse DRE Completo para lançar os dados do mês. Os Indicadores são calculados automaticamente. Use Conciliação Bancária para importar o extrato do Sicredi.",
+                    style={'fontSize':'12px','color':'#8fa894','lineHeight':'1.7'},
+                ),
+            ]),
+        ]),
+    ])
+
+def _build_charts_content():
+    return html.Div([
+        html.Div(className='section-header', children=[
+            html.Div([html.Div("Visualização de Dados", className='section-eyebrow'), html.Div("Análise Gráfica — DRE", className='section-title')]),
+        ]),
+        html.Div(style={'marginBottom':'24px'}, children=[
+            html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
+                html.Div(style={'padding':'16px 22px 12px','borderBottom':'1px solid rgba(255,255,255,0.06)','background':'#1a1f1c'}, children=[
+                    html.Div("ESTRUTURA DE CUSTOS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#ff5c5c','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'3px'}),
+                    html.Div("Custos Fixos + Variáveis + Compras", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
+                ]),
+                dcc.Graph(id='fig-debitos', config={'displayModeBar':False}, style={'height':'340px'}),
+            ]),
+        ]),
+        html.Div(children=[
+            html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
+                html.Div(style={'padding':'16px 22px 12px','borderBottom':'1px solid rgba(255,255,255,0.06)','background':'#1a1f1c'}, children=[
+                    html.Div("COMPOSIÇÃO DE RECEITAS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#3ddc84','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'3px'}),
+                    html.Div("Vendas + Outras Receitas = Receita Total", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
+                ]),
+                dcc.Graph(id='fig-receitas', config={'displayModeBar':False}, style={'height':'340px'}),
+            ]),
+        ]),
+    ])
+
+def _build_txn_content():
+    status_color = {'Confirmado':'#3ddc84','Processado':'#c9a84c','Pendente':'#ff5c5c'}
+    cat_color    = {'Receita':'#3ddc84','Despesa':'#ff5c5c'}
+    rows = []
+    for t in TRANSACOES_MOCK:
+        sc = status_color.get(t['status'], '#8fa894')
+        cc = cat_color.get(t['categoria'], '#8fa894')
+        r_rgb = '61,220,132' if cc == '#3ddc84' else '255,92,92'
+        s_rgb = {'Confirmado':'61,220,132','Processado':'201,168,76','Pendente':'255,92,92'}.get(t['status'],'100,100,100')
+        rows.append(html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
+            html.Td(t['id'],        style={'padding':'13px 20px','fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
+            html.Td(t['data'],      style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#8fa894'}),
+            html.Td(t['descricao'], style={'padding':'13px 16px','fontSize':'13px','color':'#e8ede9'}),
+            html.Td(html.Span(t['categoria'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'11px','fontWeight':'700','color':cc,'background':f'rgba({r_rgb},0.1)'}), style={'padding':'13px 16px'}),
+            html.Td(t['valor'],     style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'12px','color':'#e8ede9','fontWeight':'600','textAlign':'right'}),
+            html.Td(t['variacao'],  style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#c9a84c','textAlign':'center'}),
+            html.Td(html.Span(t['status'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'10px','fontWeight':'700','color':sc,'background':f'rgba({s_rgb},0.1)','fontFamily':"'Space Mono',monospace",'letterSpacing':'1px'}), style={'padding':'13px 20px'}),
+        ]))
+    return html.Div([
+        html.Div(className='section-header', children=[html.Div([html.Div("Histórico Financeiro", className='section-eyebrow'), html.Div("Transações Recentes", className='section-title')])]),
+        html.Div(className='table-card', children=[
+            html.Div(className='table-header', children=[html.Div("Lançamentos — Dezembro 2025", className='table-header-title'), html.Div(f"{len(TRANSACOES_MOCK)} registros", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'})]),
+            html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[
+                html.Thead(children=[html.Tr(style={'background':'#1a1f1c','borderBottom':'2px solid rgba(255,255,255,0.06)'}, children=[
+                    html.Th(h, style={'padding':'11px 20px' if i in (0,6) else '11px 16px','textAlign':'right' if i==4 else 'left','fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','letterSpacing':'2px','textTransform':'uppercase'})
+                    for i,h in enumerate(["ID","Data","Descrição","Categoria","Valor","Var.","Status"])])]),
+                html.Tbody(rows),
+            ]),
+        ]),
+    ])
+
+def _nav_result(tab, triggered_nav):
+    show = {'display':'block'}; hide = {'display':'none'}
+    NAV_IDS = ['nav-ind','nav-charts','nav-dre','nav-txn','nav-conc']
+    TITLES  = {
+        'nav-ind':    ('Rede Guapo',           'ERP Financeiro · Gestão Estratégica de Resultados'),
+        'nav-charts': ('Análise Gráfica',       'Visualização de dados financeiros'),
+        'nav-dre':    ('DRE Completo',          'Demonstração do Resultado do Exercício · Panelas do Guapo'),
+        'nav-txn':    ('Transações Recentes',   'Histórico de entradas e saídas'),
+        'nav-conc':   ('Conciliação Bancária',  'Extrato bancário · Classificação automática'),
+    }
+    title, sub = TITLES.get(triggered_nav, ('Rede Guapo', ''))
+    classes    = ['nav-item active' if n == triggered_nav else 'nav-item' for n in NAV_IDS]
+    is_dre  = tab == 'tab-dre'
+    is_conc = tab == 'tab-conc'
+
+    # conteúdo do main-content
+    if tab == 'tab-home':    content = _build_home_content()
+    elif tab == 'tab-charts': content = _build_charts_content()
+    elif tab == 'tab-txn':   content = _build_txn_content()
+    else:                    content = html.Div()
+
+    return (*classes, title, sub,
+            content,
+            hide if (is_dre or is_conc) else show,
+            show if is_dre  else hide,
+            show if is_conc else hide)
+
+
 @app.callback(
-    Output('active-tab','data'),
     Output('nav-ind','className'),
     Output('nav-charts','className'),
     Output('nav-dre','className'),
@@ -1338,46 +1514,60 @@ def update_clock(_):
     Output('nav-conc','className'),
     Output('topbar-title','children'),
     Output('topbar-subtitle','children'),
+    Output('main-content','children'),
     Output('main-content','style'),
     Output('dre-tab-wrapper','style'),
     Output('conc-tab-wrapper','style'),
+    # sidebar
     Input('nav-ind','n_clicks'),
     Input('nav-charts','n_clicks'),
     Input('nav-dre','n_clicks'),
     Input('nav-txn','n_clicks'),
     Input('nav-conc','n_clicks'),
+    # botões da home
+    Input('home-btn-dre','n_clicks'),
+    Input('home-btn-charts','n_clicks'),
+    Input('home-btn-conc','n_clicks'),
+    Input('home-btn-txn','n_clicks'),
+    Input('home-btn-export','n_clicks'),
+    # csv import
     Input('csv-store','data'),
     prevent_initial_call=True,
 )
-def nav_click(n1, n2, n3, n4, n5, csv_data):
-    triggered = ctx.triggered_id
-    show = {'display':'block'}
-    hide = {'display':'none'}
+def nav_click(*_):
+    show = {'display':'block'}; hide = {'display':'none'}
+    tid  = ctx.triggered_id
 
-    if triggered == 'csv-store':
-        if not csv_data:
-            raise dash.exceptions.PreventUpdate
-        return ('tab-dre',
-                'nav-item','nav-item','nav-item active','nav-item','nav-item',
-                'DRE Completo','CSV importado · campos preenchidos automaticamente',
-                hide, show, hide)
-    tabs = {
-        'nav-ind':    ('tab-home',   'Rede Guapo',              'ERP Financeiro · Gestão Estratégica de Resultados'),
-        'nav-charts': ('tab-charts', 'Análise Gráfica',         'Visualização de dados financeiros'),
-        'nav-dre':    ('tab-dre',    'DRE Completo',            'Demonstração do Resultado do Exercício · Panelas do Guapo'),
-        'nav-txn':    ('tab-txn',    'Transações Recentes',     'Histórico de entradas e saídas'),
-        'nav-conc':   ('tab-conc',   'Conciliação Bancária',    'Extrato bancário · Classificação automática'),
+    # mapeamento botão → nav equivalente
+    btn_to_nav = {
+        'home-btn-dre':    'nav-dre',
+        'home-btn-charts': 'nav-charts',
+        'home-btn-conc':   'nav-conc',
+        'home-btn-txn':    'nav-txn',
+        'home-btn-export': 'nav-dre',
     }
-    tab, title, sub = tabs.get(triggered, ('tab-home','Panelas do Guapo',''))
-    cls = {k: 'nav-item active' if k == triggered else 'nav-item' for k in tabs}
-    is_dre  = tab == 'tab-dre'
-    is_conc = tab == 'tab-conc'
-    return (tab,
-            cls['nav-ind'], cls['nav-charts'], cls['nav-dre'], cls['nav-txn'], cls['nav-conc'],
-            title, sub,
-            hide if (is_dre or is_conc) else show,
-            show if is_dre else hide,
-            show if is_conc else hide)
+    nav_to_tab = {
+        'nav-ind':    'tab-home',
+        'nav-charts': 'tab-charts',
+        'nav-dre':    'tab-dre',
+        'nav-txn':    'tab-txn',
+        'nav-conc':   'tab-conc',
+    }
+
+    if tid == 'csv-store':
+        csv_data = ctx.triggered[0]['value']
+        if not csv_data: raise dash.exceptions.PreventUpdate
+        return ('nav-item','nav-item','nav-item active','nav-item','nav-item',
+                'DRE Completo','CSV importado · campos preenchidos automaticamente',
+                html.Div(), hide, show, hide)
+
+    # resolver qual nav está ativo
+    nav_active = btn_to_nav.get(tid, tid)  # se for btn, mapeia; se for nav, usa direto
+    tab        = nav_to_tab.get(nav_active, 'tab-home')
+
+    return _nav_result(tab, nav_active)
+
+
 
 # MODAL CONFIG
 @app.callback(
@@ -1741,133 +1931,6 @@ def _home_feature_card(icon, title, desc, nav_id, badge=None, badge_cls="up"):
         ),
     ])
 
-@app.callback(Output('main-content','children'), Input('active-tab','data'))
-def render_content(tab):
-    if tab in ('tab-home', None):
-        return html.Div([
-            # Hero
-            html.Div(style={'marginBottom':'36px'}, children=[
-                html.Div("BEM-VINDO AO SISTEMA", style={
-                    'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#3ddc84',
-                    'textTransform':'uppercase','letterSpacing':'4px','marginBottom':'10px',
-                }),
-                html.Div(["REDE ", html.Em("GUAPO", style={'color':'#3ddc84'})], style={
-                    'fontFamily':"'Playfair Display',serif",'fontSize':'42px',
-                    'fontWeight':'900','color':'#e8ede9','letterSpacing':'-1px','lineHeight':'1',
-                    'marginBottom':'10px',
-                }),
-                html.Div("ERP Financeiro · Gestão Estratégica de Resultados", style={
-                    'fontFamily':"'Space Mono',monospace",'fontSize':'11px',
-                    'color':'#4d5e52','letterSpacing':'1px',
-                }),
-            ]),
-
-            # Cards de funcionalidades — grid 3 colunas
-            html.Div(style={
-                'display':'grid','gridTemplateColumns':'repeat(3,1fr)',
-                'gap':'18px','marginBottom':'32px',
-            }, children=[
-                _home_feature_card("📋", "DRE Completo",
-                    "Lançamento completo da Demonstração do Resultado do Exercício. Preencha receitas, compras, custos fixos e variáveis. Cálculos automáticos de margem, lucro bruto, operacional e líquido.",
-                    "dre", badge="PRINCIPAL", badge_cls="up"),
-                _home_feature_card("📊", "Indicadores & KPIs",
-                    "Visualize os indicadores financeiros reais calculados diretamente do DRE: Receita Total, Margem de Contribuição, Lucro Bruto, Resultado Líquido e muito mais.",
-                    "dre", badge="REAL-TIME", badge_cls="up"),
-                _home_feature_card("📈", "Gráficos & Análises",
-                    "Visualização completa da estrutura de custos e composição de receitas em gráficos interativos empilhados por categoria, gerados automaticamente dos dados do DRE.",
-                    "charts", badge="VISUAL", badge_cls="blue"),
-                _home_feature_card("🏦", "Conciliação Bancária",
-                    "Importe o extrato bancário (.xlsx) do Sicredi e classifique automaticamente todas as transações por tipo: PIX Recebido, Boletos, Cartão, Débito Automático e mais.",
-                    "conc", badge="AUTOMÁTICO", badge_cls="wait"),
-                _home_feature_card("💳", "Transações Recentes",
-                    "Histórico de entradas e saídas financeiras com categorias, variações e status. Acompanhe os lançamentos mais recentes do período.",
-                    "txn", badge="HISTÓRICO", badge_cls="wait"),
-                _home_feature_card("📥", "Exportar & Importar",
-                    "Exporte o DRE formatado em Excel profissional, baixe o template CSV para importação em lote e salve DREs por período para consulta no histórico.",
-                    "export", badge="FERRAMENTAS", badge_cls="blue"),
-            ]),
-
-            # Rodapé informativo
-            html.Div(style={
-                'background':'rgba(61,220,132,0.04)','border':'1px solid rgba(61,220,132,0.1)',
-                'borderRadius':'10px','padding':'18px 24px',
-                'display':'flex','alignItems':'center','gap':'16px',
-            }, children=[
-                html.Div("💡", style={'fontSize':'20px'}),
-                html.Div([
-                    html.Div("Como começar",style={
-                        'fontFamily':"'Space Mono',monospace",'fontSize':'10px',
-                        'color':'#3ddc84','textTransform':'uppercase','letterSpacing':'2px','marginBottom':'4px',
-                    }),
-                    html.Div(
-                        "Acesse o menu DRE Completo para lançar os dados do mês. Os Indicadores serão calculados automaticamente. Use Conciliação Bancária para importar o extrato do Sicredi.",
-                        style={'fontSize':'12px','color':'#8fa894','lineHeight':'1.7'},
-                    ),
-                ]),
-            ]),
-        ])
-
-    if tab == 'tab-ind':
-        # Redireciona para home — não deve chegar aqui normalmente
-        return html.Div()
-
-    elif tab == 'tab-charts':
-        return html.Div([
-            html.Div(className='section-header', children=[
-                html.Div([html.Div("Visualização de Dados", className='section-eyebrow'), html.Div("Análise Gráfica — DRE", className='section-title')]),
-            ]),
-            html.Div(style={'marginBottom':'24px'}, children=[
-                html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
-                    html.Div(style={'padding':'16px 22px 12px','borderBottom':'1px solid rgba(255,255,255,0.06)','background':'#1a1f1c'}, children=[
-                        html.Div("ESTRUTURA DE CUSTOS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#ff5c5c','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'3px'}),
-                        html.Div("Custos Fixos + Variáveis + Compras", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
-                    ]),
-                    dcc.Graph(id='fig-debitos', config={'displayModeBar':False}, style={'height':'340px'}),
-                ]),
-            ]),
-            html.Div(children=[
-                html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
-                    html.Div(style={'padding':'16px 22px 12px','borderBottom':'1px solid rgba(255,255,255,0.06)','background':'#1a1f1c'}, children=[
-                        html.Div("COMPOSIÇÃO DE RECEITAS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#3ddc84','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'3px'}),
-                        html.Div("Vendas + Outras Receitas = Receita Total", style={'fontFamily':"'Playfair Display',serif",'fontSize':'15px','fontWeight':'700','color':'#e8ede9'}),
-                    ]),
-                    dcc.Graph(id='fig-receitas', config={'displayModeBar':False}, style={'height':'340px'}),
-                ]),
-            ]),
-        ])
-
-    elif tab == 'tab-txn':
-        status_color = {'Confirmado':'#3ddc84','Processado':'#c9a84c','Pendente':'#ff5c5c'}
-        cat_color    = {'Receita':'#3ddc84','Despesa':'#ff5c5c'}
-        rows = []
-        for t in TRANSACOES_MOCK:
-            sc = status_color.get(t['status'], '#8fa894')
-            cc = cat_color.get(t['categoria'], '#8fa894')
-            r_rgb = '61,220,132' if cc == '#3ddc84' else '255,92,92'
-            s_rgb = {'Confirmado':'61,220,132','Processado':'201,168,76','Pendente':'255,92,92'}.get(t['status'],'100,100,100')
-            rows.append(html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
-                html.Td(t['id'],        style={'padding':'13px 20px','fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
-                html.Td(t['data'],      style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#8fa894'}),
-                html.Td(t['descricao'], style={'padding':'13px 16px','fontSize':'13px','color':'#e8ede9'}),
-                html.Td(html.Span(t['categoria'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'11px','fontWeight':'700','color':cc,'background':f'rgba({r_rgb},0.1)'}), style={'padding':'13px 16px'}),
-                html.Td(t['valor'],     style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'12px','color':'#e8ede9','fontWeight':'600','textAlign':'right'}),
-                html.Td(t['variacao'],  style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#c9a84c','textAlign':'center'}),
-                html.Td(html.Span(t['status'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'10px','fontWeight':'700','color':sc,'background':f'rgba({s_rgb},0.1)','fontFamily':"'Space Mono',monospace",'letterSpacing':'1px'}), style={'padding':'13px 20px'}),
-            ]))
-        return html.Div([
-            html.Div(className='section-header', children=[html.Div([html.Div("Histórico Financeiro", className='section-eyebrow'), html.Div("Transações Recentes", className='section-title')])]),
-            html.Div(className='table-card', children=[
-                html.Div(className='table-header', children=[html.Div("Lançamentos — Dezembro 2025", className='table-header-title'), html.Div(f"{len(TRANSACOES_MOCK)} registros", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'})]),
-                html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[
-                    html.Thead(children=[html.Tr(style={'background':'#1a1f1c','borderBottom':'2px solid rgba(255,255,255,0.06)'}, children=[
-                        html.Th(h, style={'padding':'11px 20px' if i in (0,6) else '11px 16px','textAlign':'right' if i==4 else 'left','fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','letterSpacing':'2px','textTransform':'uppercase'})
-                        for i,h in enumerate(["ID","Data","Descrição","Categoria","Valor","Var.","Status"])])]),
-                    html.Tbody(rows),
-                ]),
-            ]),
-        ])
-
-    return html.Div("Selecione uma aba.", style={'color':'#8fa894','padding':'40px'})
 
 # MODAL SALVAR DRE
 @app.callback(
@@ -2338,48 +2401,6 @@ def toggle_indicadores(n):
     return {'display': 'block'}, "⊟ Ocultar Indicadores"
 
 
-# ── Callbacks dos botões da Home ──────────────────────────────────────────────
-@app.callback(
-    Output('active-tab',    'data',  allow_duplicate=True),
-    Output('nav-ind',       'className', allow_duplicate=True),
-    Output('nav-charts',    'className', allow_duplicate=True),
-    Output('nav-dre',       'className', allow_duplicate=True),
-    Output('nav-txn',       'className', allow_duplicate=True),
-    Output('nav-conc',      'className', allow_duplicate=True),
-    Output('topbar-title',  'children', allow_duplicate=True),
-    Output('topbar-subtitle','children',allow_duplicate=True),
-    Output('main-content',  'style',  allow_duplicate=True),
-    Output('dre-tab-wrapper','style', allow_duplicate=True),
-    Output('conc-tab-wrapper','style',allow_duplicate=True),
-    Input('home-btn-dre',    'n_clicks'),
-    Input('home-btn-charts', 'n_clicks'),
-    Input('home-btn-conc',   'n_clicks'),
-    Input('home-btn-txn',    'n_clicks'),
-    Input('home-btn-export', 'n_clicks'),
-    prevent_initial_call=True,
-)
-def home_buttons(n_dre, n_charts, n_conc, n_txn, n_export):
-    show = {'display':'block'}; hide = {'display':'none'}
-    btn_map = {
-        'home-btn-dre':    ('tab-dre',    'nav-dre',    'DRE Completo',         'Demonstração do Resultado do Exercício · Panelas do Guapo'),
-        'home-btn-charts': ('tab-charts', 'nav-charts', 'Análise Gráfica',      'Visualização de dados financeiros'),
-        'home-btn-conc':   ('tab-conc',   'nav-conc',   'Conciliação Bancária', 'Extrato bancário · Classificação automática'),
-        'home-btn-txn':    ('tab-txn',    'nav-txn',    'Transações Recentes',  'Histórico de entradas e saídas'),
-        'home-btn-export': ('tab-dre',    'nav-dre',    'DRE Completo',         'Use as ferramentas na sidebar para exportar'),
-    }
-    tid = ctx.triggered_id
-    if not tid or tid not in btn_map:
-        raise dash.exceptions.PreventUpdate
-    tab, nav_active, title, sub = btn_map[tid]
-    nav_ids = ['nav-ind','nav-charts','nav-dre','nav-txn','nav-conc']
-    classes = ['nav-item active' if n == nav_active else 'nav-item' for n in nav_ids]
-    is_dre  = tab == 'tab-dre'
-    is_conc = tab == 'tab-conc'
-    return (tab, *classes, title, sub,
-            hide if (is_dre or is_conc) else show,
-            show if is_dre  else hide,
-            show if is_conc else hide)
-
-
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
     app.run_server(host='0.0.0.0', port=port, debug=False)
