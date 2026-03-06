@@ -1004,17 +1004,18 @@ def _build_ia_tab():
                 html.Div(style={
                     'display':'flex','gap':'10px','alignItems':'flex-end',
                 }, children=[
-                    dcc.Textarea(
+                    dcc.Input(
                         id='chat-input',
+                        type='text',
                         placeholder='Pergunte algo sobre seus dados financeiros... (Enter para enviar)',
+                        debounce=False,
+                        n_submit=0,
                         style={
                             'flex':'1','padding':'13px 16px','background':'#131714',
                             'border':'1px solid rgba(255,255,255,0.1)','borderRadius':'10px',
                             'color':'#e8ede9','fontFamily':"'Sora',sans-serif",'fontSize':'13px',
-                            'resize':'none','outline':'none','lineHeight':'1.5',
-                            'minHeight':'52px','maxHeight':'120px',
+                            'outline':'none','lineHeight':'1.5','height':'52px',
                         },
-                        n_submit=0,
                     ),
                     html.Button(
                         "➤", id='btn-chat-send', n_clicks=0,
