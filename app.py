@@ -3,9 +3,11 @@ import io
 import datetime
 import os
 import re
+import json
 import dash
-from dash import dcc, html, dash_table, Input, Output, State, ctx
+from dash import dcc, html, dash_table, Input, Output, State, ctx, ALL
 import openpyxl
+import anthropic as _anthropic
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import plotly.graph_objects as go
@@ -244,51 +246,106 @@ def classificar_categoria(tipo, valor):
 def _bytes_para_xlsx(content_bytes):
     """
     Recebe bytes de qualquer Excel (.xls ou .xlsx).
-    Se for .xls (BIFF/OLE), converte para .xlsx via LibreOffice e devolve os bytes do .xlsx.
-    Se já for .xlsx (assinatura PK), devolve os bytes originais.
+    Estratégias em ordem:
+      1. Já é .xlsx (assinatura PK) → devolve direto
+      2. xlrd  → converte .xls → .xlsx via openpyxl
+      3. pandas com engine=xlrd → salva com openpyxl
+      4. LibreOffice headless
+      5. Erro amigável pedindo para salvar como .xlsx
     """
-    # Assinatura ZIP/XLSX: começa com PK (50 4B)
+    # 1. Já é xlsx
     if content_bytes[:2] == b'PK':
-        return content_bytes  # já é xlsx
+        return content_bytes
 
-    # É .xls (OLE2: D0 CF 11 E0) — converter com LibreOffice
-    import tempfile, subprocess
-    with tempfile.TemporaryDirectory() as tmpdir:
-        xls_path  = os.path.join(tmpdir, 'extrato.xls')
-        xlsx_path = os.path.join(tmpdir, 'extrato.xlsx')
-        with open(xls_path, 'wb') as f:
-            f.write(content_bytes)
-        subprocess.run(
-            ['libreoffice', '--headless', '--norestore',
-             '--convert-to', 'xlsx:Calc MS Excel 2007 XML',
-             '--outdir', tmpdir, xls_path],
-            capture_output=True, timeout=60
-        )
-        if not os.path.exists(xlsx_path):
-            raise ValueError("Falha ao converter .xls para .xlsx. Verifique se o LibreOffice está instalado.")
-        with open(xlsx_path, 'rb') as f:
-            return f.read()
+    # 2. xlrd direto
+    try:
+        import xlrd
+        xls_wb = xlrd.open_workbook(file_contents=content_bytes)
+        new_wb = openpyxl.Workbook()
+        new_wb.remove(new_wb.active)
+        for sheet_name in xls_wb.sheet_names():
+            xls_ws = xls_wb.sheet_by_name(sheet_name)
+            new_ws = new_wb.create_sheet(title=sheet_name)
+            for row_idx in range(xls_ws.nrows):
+                for col_idx in range(xls_ws.ncols):
+                    cell = xls_ws.cell(row_idx, col_idx)
+                    val  = cell.value
+                    if cell.ctype == xlrd.XL_CELL_DATE:
+                        try:
+                            val = xlrd.xldate_as_datetime(val, xls_wb.datemode)
+                        except Exception:
+                            pass
+                    new_ws.cell(row=row_idx + 1, column=col_idx + 1, value=val)
+        buf = io.BytesIO()
+        new_wb.save(buf)
+        buf.seek(0)
+        return buf.read()
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # 3. pandas + xlrd engine
+    try:
+        import xlrd  # noqa — só para garantir que está disponível
+        df_raw = pd.read_excel(io.BytesIO(content_bytes), engine='xlrd', header=None)
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+            df_raw.to_excel(writer, index=False, header=False)
+        buf.seek(0)
+        return buf.read()
+    except Exception:
+        pass
+
+    # 4. LibreOffice
+    try:
+        import tempfile, subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            xls_path  = os.path.join(tmpdir, 'extrato.xls')
+            xlsx_path = os.path.join(tmpdir, 'extrato.xlsx')
+            with open(xls_path, 'wb') as f:
+                f.write(content_bytes)
+            subprocess.run(
+                ['libreoffice', '--headless', '--norestore',
+                 '--convert-to', 'xlsx:Calc MS Excel 2007 XML',
+                 '--outdir', tmpdir, xls_path],
+                capture_output=True, timeout=60,
+            )
+            if os.path.exists(xlsx_path):
+                with open(xlsx_path, 'rb') as f:
+                    return f.read()
+    except Exception:
+        pass
+
+    # 5. Erro amigável
+    raise ValueError(
+        "Arquivo .xls legado detectado. "
+        "Para importar, abra o arquivo no Excel/LibreOffice e salve como .xlsx — "
+        "ou instale a dependência 'xlrd' no servidor (pip install xlrd)."
+    )
 
 
 def processar_extrato_excel(content_bytes, skiprows=8):
     """
     Lê o Excel do extrato bancário (xls ou xlsx), classifica e retorna um DataFrame tratado.
-    Converte .xls → .xlsx automaticamente via LibreOffice se necessário.
+    Converte .xls → .xlsx automaticamente via xlrd ou LibreOffice se necessário.
     """
-    # Garantir que temos bytes .xlsx
     content_bytes = _bytes_para_xlsx(content_bytes)
 
     COLUNAS_ESPERADAS = ["Data", "Descrição", "Documento", "Valor (R$)", "Saldo (R$)"]
 
+    df = None
     for skip in [skiprows, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
         try:
-            df = pd.read_excel(io.BytesIO(content_bytes), skiprows=skip, engine='openpyxl')
-            df.columns = df.columns.str.strip()
-            if all(c in df.columns for c in COLUNAS_ESPERADAS):
+            df_try = pd.read_excel(io.BytesIO(content_bytes), skiprows=skip, engine='openpyxl')
+            df_try.columns = df_try.columns.str.strip()
+            if all(c in df_try.columns for c in COLUNAS_ESPERADAS):
+                df = df_try
                 break
         except Exception:
             continue
-    else:
+
+    if df is None:
         df = pd.read_excel(io.BytesIO(content_bytes), skiprows=0, engine='openpyxl')
         df.columns = df.columns.str.strip()
         if len(df.columns) >= 5:
@@ -305,10 +362,10 @@ def processar_extrato_excel(content_bytes, skiprows=8):
     df = df.dropna(subset=["Valor (R$)"])
 
     # Classificações
-    df["Tipo"]       = df["Descrição"].apply(classificar_tipo)
+    df["Tipo"]               = df["Descrição"].apply(classificar_tipo)
     df["Documento_Extraido"] = df["Descrição"].apply(extrair_documento)
-    df["Categoria"]  = df.apply(lambda r: classificar_categoria(r["Tipo"], r["Valor (R$)"]), axis=1)
-    df["Entrada/Saída"] = df["Valor (R$)"].apply(lambda x: "ENTRADA" if x > 0 else "SAÍDA")
+    df["Categoria"]          = df.apply(lambda r: classificar_categoria(r["Tipo"], r["Valor (R$)"]), axis=1)
+    df["Entrada/Saída"]      = df["Valor (R$)"].apply(lambda x: "ENTRADA" if x > 0 else "SAÍDA")
 
     # Tratamento de Estorno PIX 1:1
     def extrair_id(desc):
@@ -334,14 +391,14 @@ def processar_extrato_excel(content_bytes, skiprows=8):
         df["Data"] = df["Data"].astype(str)
 
     df_final = pd.DataFrame({
-        "Data":              df["Data"],
-        "Entrada/Saída":     df["Entrada/Saída"],
-        "Tipo":              df["Tipo"],
-        "Descrição":         df["Descrição"],
-        "Documento":         df["Documento_Extraido"],
-        "Categoria":         df["Categoria"],
-        "Valor (R$)":        df["Valor (R$)"],
-        "Saldo (R$)":        df.get("Saldo (R$)", pd.Series([None]*len(df))),
+        "Data":          df["Data"],
+        "Entrada/Saída": df["Entrada/Saída"],
+        "Tipo":          df["Tipo"],
+        "Descrição":     df["Descrição"],
+        "Documento":     df["Documento_Extraido"],
+        "Categoria":     df["Categoria"],
+        "Valor (R$)":    df["Valor (R$)"],
+        "Saldo (R$)":    df.get("Saldo (R$)", pd.Series([None]*len(df))),
     })
     df_final = df_final.drop_duplicates().reset_index(drop=True)
     return df_final
@@ -357,13 +414,13 @@ def gerar_excel_conciliacao(df):
         )
         df_exp.to_excel(writer, index=False, sheet_name="Conciliação")
         ws = writer.sheets["Conciliação"]
-        verde = PatternFill(start_color="00C6EFCE", end_color="00C6EFCE", fill_type="solid")
-        vermelho = PatternFill(start_color="00FFCCCC", end_color="00FFCCCC", fill_type="solid")
+        verde   = PatternFill(start_color="00C6EFCE", end_color="00C6EFCE", fill_type="solid")
+        vermelho= PatternFill(start_color="00FFCCCC", end_color="00FFCCCC", fill_type="solid")
         for cell in ws[1]:
             cell.fill = PatternFill(start_color="00203864", end_color="00203864", fill_type="solid")
             cell.font = Font(bold=True, color="FFFFFF")
         for row in ws.iter_rows(min_row=2):
-            es = row[1].value if len(row) > 1 else ""
+            es   = row[1].value if len(row) > 1 else ""
             fill = verde if es == "ENTRADA" else vermelho
             for cell in row:
                 cell.fill = fill
@@ -391,10 +448,6 @@ TRANSACOES_MOCK = [
     {"id":"#008","data":"08/12/2025","descricao":"Marketing Digital — Nov",      "categoria":"Despesa", "valor":"R$  5.600","variacao":"—",   "status":"Processado"},
     {"id":"#009","data":"07/12/2025","descricao":"Venda — Epsilon Global",       "categoria":"Receita", "valor":"R$ 38.900","variacao":"+11%","status":"Confirmado"},
     {"id":"#010","data":"06/12/2025","descricao":"Manutenção Infraestrutura",    "categoria":"Despesa", "valor":"R$  9.200","variacao":"—",   "status":"Processado"},
-]
-
-DRE_MOCK = [
-    {"conta":"RECEITA BRUTA","jan":"267.000","fev":"242.000","mar":"198.000","total":"707.000","tipo":"receita_bruta"},
 ]
 
 CHART_LAYOUT = dict(
@@ -605,9 +658,7 @@ def _row_resultado(label, result_id, color='#e8c97a', bg='rgba(201,168,76,0.06)'
     ])
 
 def _build_dre_tab():
-    # ── Painel de Indicadores Reais (toggleável) ──────────────────────────────
     indicadores_panel = html.Div(id='ind-panel-wrapper', children=[
-        # Barra de controle
         html.Div(style={
             'display':'flex','alignItems':'center','justifyContent':'space-between',
             'marginBottom':'16px',
@@ -634,17 +685,13 @@ def _build_dre_tab():
                 }
             ),
         ]),
-
-        # Cards de indicadores
         html.Div(id='ind-cards-wrapper', children=[
-            # Linha 1 — 4 KPIs principais
             html.Div(className='kpi-grid', style={'marginBottom':'16px'}, children=[
                 html.Div(id='ind-receita-total',   className='kpi-card'),
                 html.Div(id='ind-margem-contrib',  className='kpi-card'),
                 html.Div(id='ind-lucro-bruto',     className='kpi-card'),
                 html.Div(id='ind-lucro-liquido',   className='kpi-card'),
             ]),
-            # Linha 2 — 4 KPIs secundários
             html.Div(className='kpi-grid', style={'marginBottom':'24px'}, children=[
                 html.Div(id='ind-total-compras',   className='kpi-card'),
                 html.Div(id='ind-custos-fixos',    className='kpi-card'),
@@ -652,7 +699,6 @@ def _build_dre_tab():
                 html.Div(id='ind-margem-pct',      className='kpi-card'),
             ]),
         ]),
-
         html.Div(className='divider'),
     ])
 
@@ -824,13 +870,7 @@ TYPE_COLORS = {
 }
 
 def _build_conciliacao_tab():
-    dropdown_style = {
-        'background':'#0d0f0e','color':'#e8ede9',
-        'border':'1px solid rgba(255,255,255,0.1)','borderRadius':'6px',
-        'fontFamily':"'Space Mono',monospace",'fontSize':'11px',
-    }
     return html.Div([
-        # Upload
         dcc.Upload(
             id='upload-extrato',
             children=html.Div(style={'display':'flex','alignItems':'center','justifyContent':'space-between','width':'100%','gap':'16px'}, children=[
@@ -848,11 +888,7 @@ def _build_conciliacao_tab():
             className='upload-area', multiple=False,
             style={'marginBottom':'20px'},
         ),
-
-        # KPIs resumo
         html.Div(id='conc-kpis', style={'marginBottom':'20px'}),
-
-        # Filtros
         html.Div(style={
             'display':'flex','gap':'12px','alignItems':'flex-end','marginBottom':'20px',
             'flexWrap':'wrap',
@@ -862,8 +898,7 @@ def _build_conciliacao_tab():
                 dcc.Dropdown(
                     id='filtro-tipo',
                     options=[{'label': t, 'value': t} for t in TIPOS_DISPONIVEIS],
-                    value='TODOS',
-                    clearable=False,
+                    value='TODOS', clearable=False,
                     style={'width':'220px','background':'#0d0f0e'},
                     className='dre-dropdown',
                 ),
@@ -873,12 +908,11 @@ def _build_conciliacao_tab():
                 dcc.Dropdown(
                     id='filtro-es',
                     options=[
-                        {'label': 'TODOS', 'value': 'TODOS'},
+                        {'label': 'TODOS',      'value': 'TODOS'},
                         {'label': '⬆ ENTRADA', 'value': 'ENTRADA'},
                         {'label': '⬇ SAÍDA',   'value': 'SAÍDA'},
                     ],
-                    value='TODOS',
-                    clearable=False,
+                    value='TODOS', clearable=False,
                     style={'width':'180px'},
                     className='dre-dropdown',
                 ),
@@ -886,10 +920,8 @@ def _build_conciliacao_tab():
             html.Div([
                 html.Div("Buscar na Descrição", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','textTransform':'uppercase','letterSpacing':'2px','marginBottom':'6px'}),
                 dcc.Input(
-                    id='filtro-busca',
-                    type='text',
-                    placeholder='Filtrar descrição...',
-                    debounce=True,
+                    id='filtro-busca', type='text',
+                    placeholder='Filtrar descrição...', debounce=True,
                     style={
                         'padding':'9px 14px','background':'#0d0f0e',
                         'border':'1px solid rgba(255,255,255,0.1)','borderRadius':'6px',
@@ -898,27 +930,154 @@ def _build_conciliacao_tab():
                     }
                 ),
             ]),
-            # Botão exportar
             html.Div(style={'marginLeft':'auto','display':'flex','alignItems':'flex-end'}, children=[
                 html.Button(
-                    "⬇ Exportar Excel",
-                    id='btn-export-conc',
+                    "⬇ Exportar Excel", id='btn-export-conc',
                     className='btn-action',
                     style={'padding':'9px 18px','fontSize':'11px'},
                 ),
             ]),
         ]),
-
-        # Gráficos
         html.Div(id='conc-charts', style={'marginBottom':'20px'}),
-
-        # Tabela
         html.Div(id='conc-table'),
-
-        # Download
         dcc.Download(id='download-conc-excel'),
     ])
 
+
+IA_SUGESTOES = [
+    "Qual é meu resultado líquido atual?",
+    "Onde estou gastando mais?",
+    "Como está minha margem de contribuição?",
+    "Quais grupos de produto têm mais custo?",
+    "Meus custos fixos estão altos?",
+    "Qual categoria teve mais entradas no extrato?",
+    "Como posso melhorar meu lucro bruto?",
+    "Qual a proporção de compras sobre receita?",
+]
+
+def _build_ia_tab():
+    return html.Div([
+        # Header
+        html.Div(className='section-header', style={'marginBottom':'28px'}, children=[
+            html.Div([
+                html.Div("Inteligência Artificial", className='section-eyebrow'),
+                html.Div("Assistente Financeiro IA", className='section-title'),
+            ]),
+            html.Div("Pergunte sobre seus dados do DRE e extrato bancário em linguagem natural",
+                     style={'fontSize':'12px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
+        ]),
+
+        # Layout principal: chat à esquerda, painel direito
+        html.Div(style={'display':'grid','gridTemplateColumns':'1fr 320px','gap':'24px','alignItems':'start'}, children=[
+
+            # ── COLUNA CHAT ──────────────────────────────────────────────────
+            html.Div([
+                # Janela de mensagens
+                html.Div(id='chat-window', style={
+                    'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
+                    'borderRadius':'12px','padding':'24px','minHeight':'460px',
+                    'maxHeight':'520px','overflowY':'auto','marginBottom':'16px',
+                    'display':'flex','flexDirection':'column','gap':'16px',
+                }, children=[
+                    # Mensagem de boas-vindas
+                    html.Div(style={'display':'flex','gap':'12px','alignItems':'flex-start'}, children=[
+                        html.Div("🤖", style={'fontSize':'22px','flexShrink':'0','marginTop':'2px'}),
+                        html.Div(style={
+                            'background':'#1a1f1c','border':'1px solid rgba(61,220,132,0.15)',
+                            'borderRadius':'12px 12px 12px 4px','padding':'14px 18px',
+                            'maxWidth':'85%',
+                        }, children=[
+                            html.Div("Olá! Sou o Assistente Financeiro da Rede Guapo.", style={
+                                'fontFamily':"'Playfair Display',serif",'fontSize':'15px',
+                                'fontWeight':'700','color':'#e8ede9','marginBottom':'8px',
+                            }),
+                            html.Div([
+                                "Analiso seus dados do ",html.Strong("DRE")," e da ",
+                                html.Strong("Conciliação Bancária")," em tempo real. ",
+                                "Preencha o DRE ou importe um extrato e me faça qualquer pergunta financeira.",
+                            ], style={'fontSize':'13px','color':'#8fa894','lineHeight':'1.7'}),
+                        ]),
+                    ]),
+                ]),
+
+                # Input + botão
+                html.Div(style={
+                    'display':'flex','gap':'10px','alignItems':'flex-end',
+                }, children=[
+                    dcc.Textarea(
+                        id='chat-input',
+                        placeholder='Pergunte algo sobre seus dados financeiros... (Enter para enviar)',
+                        style={
+                            'flex':'1','padding':'13px 16px','background':'#131714',
+                            'border':'1px solid rgba(255,255,255,0.1)','borderRadius':'10px',
+                            'color':'#e8ede9','fontFamily':"'Sora',sans-serif",'fontSize':'13px',
+                            'resize':'none','outline':'none','lineHeight':'1.5',
+                            'minHeight':'52px','maxHeight':'120px',
+                        },
+                        n_submit=0,
+                    ),
+                    html.Button(
+                        "➤", id='btn-chat-send', n_clicks=0,
+                        style={
+                            'width':'52px','height':'52px','borderRadius':'10px',
+                            'background':'#3ddc84','border':'none','color':'#0d0f0e',
+                            'fontSize':'18px','cursor':'pointer','flexShrink':'0',
+                            'transition':'all 0.25s','fontWeight':'700',
+                        }
+                    ),
+                    html.Button(
+                        "🗑", id='btn-chat-clear', n_clicks=0,
+                        style={
+                            'width':'52px','height':'52px','borderRadius':'10px',
+                            'background':'rgba(255,92,92,0.08)','border':'1px solid rgba(255,92,92,0.2)',
+                            'color':'#ff5c5c','fontSize':'16px','cursor':'pointer','flexShrink':'0',
+                            'transition':'all 0.25s',
+                        }
+                    ),
+                ]),
+                html.Div(id='chat-status', style={
+                    'fontFamily':"'Space Mono',monospace",'fontSize':'10px',
+                    'color':'#4d5e52','marginTop':'8px','minHeight':'16px','letterSpacing':'1px',
+                }),
+            ]),
+
+            # ── COLUNA DIREITA ───────────────────────────────────────────────
+            html.Div([
+                # Sugestões
+                html.Div(style={
+                    'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
+                    'borderRadius':'12px','padding':'20px','marginBottom':'16px',
+                }, children=[
+                    html.Div("SUGESTÕES", style={
+                        'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#3ddc84',
+                        'textTransform':'uppercase','letterSpacing':'3px','marginBottom':'14px',
+                    }),
+                    html.Div([
+                        html.Button(
+                            s,
+                            id={'type':'chat-sugestao','index':i},
+                            n_clicks=0,
+                            style={
+                                'display':'block','width':'100%','textAlign':'left',
+                                'padding':'10px 14px','marginBottom':'8px',
+                                'background':'rgba(61,220,132,0.04)',
+                                'border':'1px solid rgba(61,220,132,0.12)',
+                                'borderRadius':'8px','color':'#8fa894',
+                                'fontFamily':"'Sora',sans-serif",'fontSize':'12px',
+                                'cursor':'pointer','transition':'all 0.2s','lineHeight':'1.4',
+                            }
+                        ) for i, s in enumerate(IA_SUGESTOES)
+                    ]),
+                ]),
+
+                # Status dos dados
+                html.Div(id='ia-data-status', style={
+                    'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
+                    'borderRadius':'12px','padding':'20px',
+                }),
+            ]),
+        ]),
+    ])
 
 # ── INDEX STRING ──────────────────────────────────────────────────────────────
 app.index_string = '''<!DOCTYPE html>
@@ -948,7 +1107,6 @@ app.index_string = '''<!DOCTYPE html>
             ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:var(--bg2)}
             ::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
             ::-webkit-scrollbar-thumb:hover{background:var(--green-dim)}
-
             .screen-login{min-height:100vh;display:flex;flex-direction:column;position:relative;overflow:hidden;background:var(--bg)}
             .screen-login::before{content:'';position:absolute;inset:0;background-image:linear-gradient(rgba(61,220,132,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(61,220,132,0.03) 1px,transparent 1px);background-size:48px 48px;animation:grid-drift 20s linear infinite;pointer-events:none}
             @keyframes grid-drift{0%{background-position:0 0}100%{background-position:48px 48px}}
@@ -977,7 +1135,6 @@ app.index_string = '''<!DOCTYPE html>
             .btn-login:hover{background:var(--gold-light);transform:translateY(-1px);box-shadow:0 8px 24px rgba(61,220,132,0.3)}
             .login-error{margin-top:16px;min-height:20px;font-family:'Space Mono',monospace;font-size:11px;color:var(--red);text-align:center;letter-spacing:1px}
             .login-footer-note{margin-top:20px;text-align:center;font-family:'Space Mono',monospace;font-size:10px;color:var(--text-dim);letter-spacing:1px}
-
             .screen-dash{background:var(--bg);min-height:100vh}
             .dash-layout{display:flex}
             .sidebar{width:240px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:50;overflow-y:auto}
@@ -1074,7 +1231,6 @@ app.index_string = '''<!DOCTYPE html>
             tr:hover td{background:rgba(255,255,255,0.02)!important}
             .csv-info{background:rgba(61,220,132,0.04);border:1px solid rgba(61,220,132,0.12);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-family:'Space Mono',monospace;font-size:10px;color:var(--text-dim);line-height:1.7}
             .csv-info strong{color:var(--green)}
-            /* Conciliação table */
             .conc-table-wrap{overflow-x:auto;border-radius:var(--r);border:1px solid var(--border)}
             .conc-table{width:100%;border-collapse:collapse;font-size:12px}
             .conc-table th{background:var(--bg3);padding:10px 14px;font-family:'Space Mono',monospace;font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;text-align:left;border-bottom:2px solid rgba(255,255,255,0.06);white-space:nowrap}
@@ -1086,13 +1242,31 @@ app.index_string = '''<!DOCTYPE html>
             .val-entrada{color:#3ddc84;font-family:'Space Mono',monospace;font-size:11px;font-weight:700;text-align:right}
             .val-saida{color:#ff5c5c;font-family:'Space Mono',monospace;font-size:11px;font-weight:700;text-align:right}
             .val-saldo{color:var(--text);font-family:'Space Mono',monospace;font-size:11px;text-align:right}
-
-            /* Dropdown dark */
+            .home-feature-card{background:#131714;border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:28px 26px;display:flex;flex-direction:column;gap:12px;transition:all 0.3s;cursor:default;position:relative;overflow:hidden}
+            .home-feature-card:hover{border-color:rgba(61,220,132,0.25);transform:translateY(-2px);box-shadow:0 12px 32px rgba(0,0,0,0.3)}
             .dre-dropdown .Select-control{background:#0d0f0e!important;border-color:rgba(255,255,255,0.1)!important;color:#e8ede9!important}
             .dre-dropdown .Select-menu-outer{background:#131714!important;border-color:rgba(255,255,255,0.1)!important}
             .dre-dropdown .Select-option{color:#8fa894!important;background:#131714!important}
             .dre-dropdown .Select-option.is-focused{background:#1a1f1c!important;color:#e8ede9!important}
             .dre-dropdown .Select-value-label{color:#e8ede9!important}
+            /* ── CHAT IA ── */
+            #chat-window::-webkit-scrollbar{width:4px}
+            #chat-window::-webkit-scrollbar-track{background:transparent}
+            #chat-window::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:2px}
+            .chat-msg-user{display:flex;gap:12px;align-items:flex-start;flex-direction:row-reverse}
+            .chat-bubble-user{background:rgba(61,220,132,0.1);border:1px solid rgba(61,220,132,0.2);border-radius:12px 12px 4px 12px;padding:12px 16px;max-width:80%;font-size:13px;color:#e8ede9;line-height:1.6;font-family:'Sora',sans-serif}
+            .chat-msg-bot{display:flex;gap:12px;align-items:flex-start}
+            .chat-bubble-bot{background:#1a1f1c;border:1px solid rgba(61,220,132,0.12);border-radius:12px 12px 12px 4px;padding:14px 18px;max-width:85%;font-size:13px;color:#8fa894;line-height:1.7;font-family:'Sora',sans-serif}
+            .chat-bubble-bot strong{color:#e8ede9}
+            .chat-bubble-bot em{color:#3ddc84;font-style:normal;font-weight:600}
+            .chat-thinking{display:flex;gap:6px;align-items:center;padding:4px 0}
+            .chat-thinking span{width:7px;height:7px;border-radius:50%;background:#3ddc84;animation:thinking 1.2s ease-in-out infinite}
+            .chat-thinking span:nth-child(2){animation-delay:0.2s}
+            .chat-thinking span:nth-child(3){animation-delay:0.4s}
+            @keyframes thinking{0%,60%,100%{opacity:0.2;transform:scale(0.8)}30%{opacity:1;transform:scale(1)}}
+            .chat-sugestao-btn:hover{background:rgba(61,220,132,0.1)!important;border-color:rgba(61,220,132,0.3)!important;color:#e8ede9!important}
+            #btn-chat-send:hover{background:#2ab86a!important;transform:translateY(-1px)}
+            #btn-chat-clear:hover{background:rgba(255,92,92,0.15)!important}
         </style>
         <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -1127,12 +1301,15 @@ app.index_string = '''<!DOCTYPE html>
 
 # ── LAYOUT ─────────────────────────────────────────────────────────────────────
 app.layout = html.Div([
-    dcc.Store(id='auth-status', data=False),
-    dcc.Store(id='csv-store',   data={}),
-    dcc.Store(id='dre-store',   data={}),
-    dcc.Store(id='active-tab',  data='tab-home'),
-    dcc.Store(id='dre-log',     data={}),
-    dcc.Store(id='extrato-store', data=None),   # ← dados da conciliação
+    dcc.Store(id='auth-status',   data=False),
+    dcc.Store(id='csv-store',     data={}),
+    dcc.Store(id='dre-store',     data={}),
+    dcc.Store(id='active-tab',    data='tab-home'),
+    dcc.Store(id='dre-log',       data={}),
+    dcc.Store(id='extrato-store', data=None),
+    # ── Store de navegação — recebe o ID do nav desejado ──────────────────────
+    dcc.Store(id='nav-request',   data=None),
+    dcc.Store(id='chat-history',  data=[]),   # histórico de mensagens do chat IA
     dcc.Interval(id='clock-tick', interval=60_000, n_intervals=0),
     dcc.Download(id='download-excel'),
     dcc.Download(id='download-template'),
@@ -1277,11 +1454,12 @@ app.layout = html.Div([
                 ]),
                 html.Div(className='sidebar-section', children=[
                     html.Div("Principal", className='sidebar-section-label'),
-                    html.Div(id='nav-ind',    children=[html.Span("🏠", className='nav-icon'), "Início"],              className='nav-item active'),
-                    html.Div(id='nav-charts', children=[html.Span("📈", className='nav-icon'), "Gráficos"],         className='nav-item'),
-                    html.Div(id='nav-dre',    children=[html.Span("📋", className='nav-icon'), "DRE Completo"],     className='nav-item'),
-                    html.Div(id='nav-txn',    children=[html.Span("💳", className='nav-icon'), "Transações"],       className='nav-item'),
-                    html.Div(id='nav-conc',   children=[html.Span("🏦", className='nav-icon'), "Conciliação Bancária"], className='nav-item'),
+                    html.Div(id='nav-ind',    children=[html.Span("🏠", className='nav-icon'), "Início"],                  className='nav-item active'),
+                    html.Div(id='nav-charts', children=[html.Span("📈", className='nav-icon'), "Gráficos"],               className='nav-item'),
+                    html.Div(id='nav-dre',    children=[html.Span("📋", className='nav-icon'), "DRE Completo"],           className='nav-item'),
+                    html.Div(id='nav-txn',    children=[html.Span("💳", className='nav-icon'), "Transações"],             className='nav-item'),
+                    html.Div(id='nav-conc',   children=[html.Span("🏦", className='nav-icon'), "Conciliação Bancária"],   className='nav-item'),
+                    html.Div(id='nav-ia',     children=[html.Span("🤖", className='nav-icon'), "Assistente IA"],           className='nav-item'),
                 ]),
                 html.Div(className='sidebar-section', children=[
                     html.Div("Ferramentas", className='sidebar-section-label'),
@@ -1304,7 +1482,7 @@ app.layout = html.Div([
             html.Div(className='dash-main', children=[
                 html.Div(className='topbar', children=[
                     html.Div([
-                        html.Div(id='topbar-title', children="Rede Guapo", className='topbar-title'),
+                        html.Div(id='topbar-title',    children="Rede Guapo",                                    className='topbar-title'),
                         html.Div(id='topbar-subtitle', children="ERP Financeiro · Gestão Estratégica de Resultados", className='topbar-subtitle'),
                     ]),
                     html.Div(className='topbar-actions', children=[
@@ -1312,18 +1490,21 @@ app.layout = html.Div([
                         html.Div([html.Div(className='status-dot'), "SISTEMA ATIVO"], className='status-chip'),
                     ]),
                 ]),
-                html.Div(id='main-content', className='main-content', style={'display':'block'}),
+                html.Div(id='main-content',     className='main-content', style={'display':'block'}),
                 html.Div(id='dre-tab-wrapper',  className='main-content', style={'display':'none'}, children=[_build_dre_tab()]),
                 html.Div(id='conc-tab-wrapper', className='main-content', style={'display':'none'}, children=[
                     html.Div(className='section-header', children=[
                         html.Div([
-                            html.Div("Extrato Bancário", className='section-eyebrow'),
+                            html.Div("Extrato Bancário",     className='section-eyebrow'),
                             html.Div("Conciliação Bancária", className='section-title'),
                         ]),
                         html.Div("Importe o extrato Excel para classificar automaticamente as transações",
                                  style={'fontSize':'12px','color':'#4d5e52','fontFamily':"'Space Mono',monospace"}),
                     ]),
                     _build_conciliacao_tab(),
+                ]),
+                html.Div(id='ia-tab-wrapper', className='main-content', style={'display':'none'}, children=[
+                    _build_ia_tab(),
                 ]),
             ]),
         ]),
@@ -1364,6 +1545,7 @@ def update_clock(_):
 
 # ─── helpers de navegação ────────────────────────────────────────────────────
 def _build_home_content():
+    """Constrói a home com botões usando padrão de ID dinâmico (dict)."""
     return html.Div([
         html.Div(style={'marginBottom':'36px'}, children=[
             html.Div("BEM-VINDO AO SISTEMA", style={
@@ -1386,22 +1568,22 @@ def _build_home_content():
         }, children=[
             _home_feature_card("📋", "DRE Completo",
                 "Lançamento da Demonstração do Resultado do Exercício. Receitas, compras, custos fixos e variáveis. Cálculos automáticos de margem e lucro.",
-                "dre", badge="PRINCIPAL", badge_cls="up"),
+                "nav-dre", badge="PRINCIPAL", badge_cls="up"),
             _home_feature_card("📊", "Indicadores & KPIs",
                 "Indicadores financeiros reais calculados diretamente do DRE: Receita Total, Margem de Contribuição, Lucro Bruto e Resultado Líquido.",
-                "dre", badge="REAL-TIME", badge_cls="up"),
+                "nav-dre", badge="REAL-TIME", badge_cls="up"),
             _home_feature_card("📈", "Gráficos & Análises",
                 "Estrutura de custos e composição de receitas em gráficos interativos, gerados automaticamente dos dados do DRE.",
-                "charts", badge="VISUAL", badge_cls="blue"),
+                "nav-charts", badge="VISUAL", badge_cls="blue"),
             _home_feature_card("🏦", "Conciliação Bancária",
                 "Importe o extrato bancário (.xls/.xlsx) do Sicredi e classifique automaticamente as transações por tipo.",
-                "conc", badge="AUTOMÁTICO", badge_cls="wait"),
+                "nav-conc", badge="AUTOMÁTICO", badge_cls="wait"),
             _home_feature_card("💳", "Transações Recentes",
                 "Histórico de entradas e saídas com categorias, variações e status dos lançamentos do período.",
-                "txn", badge="HISTÓRICO", badge_cls="wait"),
+                "nav-txn", badge="HISTÓRICO", badge_cls="wait"),
             _home_feature_card("📥", "Exportar & Importar",
                 "Exporte o DRE em Excel, baixe o template CSV, salve DREs por período e consulte o histórico.",
-                "export", badge="FERRAMENTAS", badge_cls="blue"),
+                "nav-export", badge="FERRAMENTAS", badge_cls="blue"),
         ]),
         html.Div(style={
             'background':'rgba(61,220,132,0.04)','border':'1px solid rgba(61,220,132,0.1)',
@@ -1422,10 +1604,45 @@ def _build_home_content():
         ]),
     ])
 
+def _home_feature_card(icon, title, desc, nav_target, badge=None, badge_cls="up"):
+    """Card da home com botão usando ID dinâmico (dict) — evita duplicação de IDs."""
+    return html.Div(className='home-feature-card', children=[
+        html.Div(style={
+            'position':'absolute','top':0,'left':0,'right':0,'height':'2px',
+            'background':'linear-gradient(90deg,var(--green),transparent)','opacity':'0.4',
+        }),
+        html.Div(style={'display':'flex','alignItems':'center','justifyContent':'space-between'}, children=[
+            html.Div(icon, style={'fontSize':'26px'}),
+            html.Div(badge, className=f'kpi-badge {badge_cls}') if badge else html.Div(),
+        ]),
+        html.Div(title, style={
+            'fontFamily':"'Playfair Display',serif",'fontSize':'17px',
+            'fontWeight':'700','color':'#e8ede9','lineHeight':'1.2',
+        }),
+        html.Div(desc, style={
+            'fontSize':'12px','color':'#8fa894','lineHeight':'1.6',
+            'fontFamily':"'Sora',sans-serif",'flex':'1',
+        }),
+        # ── Botão com ID dinâmico (dict) para padrão ALL ──────────────────────
+        html.Button(
+            "Acessar →",
+            id={'type': 'home-nav-btn', 'index': nav_target},
+            style={
+                'marginTop':'8px','padding':'10px 20px','borderRadius':'6px',
+                'border':'1px solid rgba(61,220,132,0.3)',
+                'background':'rgba(61,220,132,0.07)','color':'#3ddc84',
+                'fontFamily':"'Space Mono',monospace",'fontSize':'10px',
+                'fontWeight':'700','letterSpacing':'2px','textTransform':'uppercase',
+                'cursor':'pointer','width':'fit-content','transition':'all 0.25s',
+            }
+        ),
+    ])
+
 def _build_charts_content():
     return html.Div([
         html.Div(className='section-header', children=[
-            html.Div([html.Div("Visualização de Dados", className='section-eyebrow'), html.Div("Análise Gráfica — DRE", className='section-title')]),
+            html.Div([html.Div("Visualização de Dados", className='section-eyebrow'),
+                      html.Div("Análise Gráfica — DRE", className='section-title')]),
         ]),
         html.Div(style={'marginBottom':'24px'}, children=[
             html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','overflow':'hidden'}, children=[
@@ -1466,9 +1683,15 @@ def _build_txn_content():
             html.Td(html.Span(t['status'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'10px','fontWeight':'700','color':sc,'background':f'rgba({s_rgb},0.1)','fontFamily':"'Space Mono',monospace",'letterSpacing':'1px'}), style={'padding':'13px 20px'}),
         ]))
     return html.Div([
-        html.Div(className='section-header', children=[html.Div([html.Div("Histórico Financeiro", className='section-eyebrow'), html.Div("Transações Recentes", className='section-title')])]),
+        html.Div(className='section-header', children=[
+            html.Div([html.Div("Histórico Financeiro", className='section-eyebrow'),
+                      html.Div("Transações Recentes", className='section-title')])
+        ]),
         html.Div(className='table-card', children=[
-            html.Div(className='table-header', children=[html.Div("Lançamentos — Dezembro 2025", className='table-header-title'), html.Div(f"{len(TRANSACOES_MOCK)} registros", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'})]),
+            html.Div(className='table-header', children=[
+                html.Div("Lançamentos — Dezembro 2025", className='table-header-title'),
+                html.Div(f"{len(TRANSACOES_MOCK)} registros", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
+            ]),
             html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[
                 html.Thead(children=[html.Tr(style={'background':'#1a1f1c','borderBottom':'2px solid rgba(255,255,255,0.06)'}, children=[
                     html.Th(h, style={'padding':'11px 20px' if i in (0,6) else '11px 16px','textAlign':'right' if i==4 else 'left','fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','letterSpacing':'2px','textTransform':'uppercase'})
@@ -1480,93 +1703,101 @@ def _build_txn_content():
 
 def _nav_result(tab, triggered_nav):
     show = {'display':'block'}; hide = {'display':'none'}
-    NAV_IDS = ['nav-ind','nav-charts','nav-dre','nav-txn','nav-conc']
+    NAV_IDS = ['nav-ind','nav-charts','nav-dre','nav-txn','nav-conc','nav-ia']
     TITLES  = {
         'nav-ind':    ('Rede Guapo',           'ERP Financeiro · Gestão Estratégica de Resultados'),
         'nav-charts': ('Análise Gráfica',       'Visualização de dados financeiros'),
         'nav-dre':    ('DRE Completo',          'Demonstração do Resultado do Exercício · Panelas do Guapo'),
         'nav-txn':    ('Transações Recentes',   'Histórico de entradas e saídas'),
         'nav-conc':   ('Conciliação Bancária',  'Extrato bancário · Classificação automática'),
+        'nav-ia':     ('Assistente IA',         'Análise financeira em linguagem natural · powered by Claude'),
     }
     title, sub = TITLES.get(triggered_nav, ('Rede Guapo', ''))
     classes    = ['nav-item active' if n == triggered_nav else 'nav-item' for n in NAV_IDS]
     is_dre  = tab == 'tab-dre'
     is_conc = tab == 'tab-conc'
+    is_ia   = tab == 'tab-ia'
 
-    # conteúdo do main-content
-    if tab == 'tab-home':    content = _build_home_content()
+    if tab == 'tab-home':     content = _build_home_content()
     elif tab == 'tab-charts': content = _build_charts_content()
-    elif tab == 'tab-txn':   content = _build_txn_content()
-    else:                    content = html.Div()
+    elif tab == 'tab-txn':    content = _build_txn_content()
+    else:                     content = html.Div()
+
+    main_style = hide if (is_dre or is_conc or is_ia) else show
 
     return (*classes, title, sub,
             content,
-            hide if (is_dre or is_conc) else show,
+            main_style,
             show if is_dre  else hide,
-            show if is_conc else hide)
+            show if is_conc else hide,
+            show if is_ia   else hide)
 
 
+# ── Callback unificado de navegação ──────────────────────────────────────────
 @app.callback(
     Output('nav-ind','className'),
     Output('nav-charts','className'),
     Output('nav-dre','className'),
     Output('nav-txn','className'),
     Output('nav-conc','className'),
+    Output('nav-ia','className'),
     Output('topbar-title','children'),
     Output('topbar-subtitle','children'),
     Output('main-content','children'),
     Output('main-content','style'),
     Output('dre-tab-wrapper','style'),
     Output('conc-tab-wrapper','style'),
-    # sidebar
-    Input('nav-ind','n_clicks'),
-    Input('nav-charts','n_clicks'),
-    Input('nav-dre','n_clicks'),
-    Input('nav-txn','n_clicks'),
-    Input('nav-conc','n_clicks'),
-    # botões da home
-    Input('home-btn-dre','n_clicks'),
-    Input('home-btn-charts','n_clicks'),
-    Input('home-btn-conc','n_clicks'),
-    Input('home-btn-txn','n_clicks'),
-    Input('home-btn-export','n_clicks'),
+    Output('ia-tab-wrapper','style'),
+    # sidebar direto
+    Input('nav-ind',    'n_clicks'),
+    Input('nav-charts', 'n_clicks'),
+    Input('nav-dre',    'n_clicks'),
+    Input('nav-txn',    'n_clicks'),
+    Input('nav-conc',   'n_clicks'),
+    Input('nav-ia',     'n_clicks'),
+    # botões da home com padrão ALL (dict IDs)
+    Input({'type': 'home-nav-btn', 'index': ALL}, 'n_clicks'),
     # csv import
-    Input('csv-store','data'),
+    Input('csv-store', 'data'),
     prevent_initial_call=True,
 )
-def nav_click(*_):
+def nav_click(*args):
     show = {'display':'block'}; hide = {'display':'none'}
     tid  = ctx.triggered_id
 
-    # mapeamento botão → nav equivalente
-    btn_to_nav = {
-        'home-btn-dre':    'nav-dre',
-        'home-btn-charts': 'nav-charts',
-        'home-btn-conc':   'nav-conc',
-        'home-btn-txn':    'nav-txn',
-        'home-btn-export': 'nav-dre',
-    }
     nav_to_tab = {
         'nav-ind':    'tab-home',
         'nav-charts': 'tab-charts',
         'nav-dre':    'tab-dre',
         'nav-txn':    'tab-txn',
         'nav-conc':   'tab-conc',
+        'nav-ia':     'tab-ia',
     }
 
+    # Botão da home (ID dinâmico dict)
+    if isinstance(tid, dict) and tid.get('type') == 'home-nav-btn':
+        nav_active = tid['index']
+        tab = nav_to_tab.get(nav_active, 'tab-home')
+        if nav_active == 'nav-export':
+            nav_active = 'nav-ind'
+            tab = 'tab-home'
+        return _nav_result(tab, nav_active)
+
+    # CSV importado → vai para DRE
     if tid == 'csv-store':
         csv_data = ctx.triggered[0]['value']
-        if not csv_data: raise dash.exceptions.PreventUpdate
-        return ('nav-item','nav-item','nav-item active','nav-item','nav-item',
+        if not csv_data:
+            raise dash.exceptions.PreventUpdate
+        return ('nav-item','nav-item','nav-item active','nav-item','nav-item','nav-item',
                 'DRE Completo','CSV importado · campos preenchidos automaticamente',
-                html.Div(), hide, show, hide)
+                html.Div(), hide, show, hide, hide)
 
-    # resolver qual nav está ativo
-    nav_active = btn_to_nav.get(tid, tid)  # se for btn, mapeia; se for nav, usa direto
-    tab        = nav_to_tab.get(nav_active, 'tab-home')
+    # Sidebar nav item
+    if tid in nav_to_tab:
+        tab = nav_to_tab[tid]
+        return _nav_result(tab, tid)
 
-    return _nav_result(tab, nav_active)
-
+    raise dash.exceptions.PreventUpdate
 
 
 # MODAL CONFIG
@@ -1580,13 +1811,13 @@ def nav_click(*_):
 def toggle_modal_config(*_):
     return {'display':'block'} if ctx.triggered_id == 'nav-config' else {'display':'none'}
 
-@app.callback(Output('toggle-notif','className'), Input('toggle-notif','n_clicks'), State('toggle-notif','className'), prevent_initial_call=True)
+@app.callback(Output('toggle-notif','className'),   Input('toggle-notif','n_clicks'),   State('toggle-notif','className'),   prevent_initial_call=True)
 def _t1(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
-@app.callback(Output('toggle-dark','className'), Input('toggle-dark','n_clicks'), State('toggle-dark','className'), prevent_initial_call=True)
+@app.callback(Output('toggle-dark','className'),    Input('toggle-dark','n_clicks'),    State('toggle-dark','className'),    prevent_initial_call=True)
 def _t2(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 @app.callback(Output('toggle-autoexp','className'), Input('toggle-autoexp','n_clicks'), State('toggle-autoexp','className'), prevent_initial_call=True)
 def _t3(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
-@app.callback(Output('toggle-auto','className'), Input('toggle-auto','n_clicks'), State('toggle-auto','className'), prevent_initial_call=True)
+@app.callback(Output('toggle-auto','className'),    Input('toggle-auto','n_clicks'),    State('toggle-auto','className'),    prevent_initial_call=True)
 def _t4(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 
 @app.callback(
@@ -1599,7 +1830,7 @@ def _t4(n, cls): return 'toggle off' if cls and 'on' in cls else 'toggle on'
 )
 def export_excel(n, dre_data):
     if not n: raise dash.exceptions.PreventUpdate
-    data = gerar_excel(dre_data or {})
+    data  = gerar_excel(dre_data or {})
     fname = f"GUAPO_DRE_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     toast = html.Div([html.Span("✓", style={'color':'#3ddc84','fontWeight':'700','fontSize':'16px'}),
                       html.Span(f" Excel exportado — {fname}", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'})], className='toast')
@@ -1757,8 +1988,8 @@ def calc_receita_total(*vals):
     prevent_initial_call=False,
 )
 def calc_margem(*vals):
-    receita = sum(_parse(v) for v in vals[:7] if v is not None)
-    compras = sum(_parse(v) for v in vals[7:] if v is not None)
+    receita = sum(_parse(v) for v in vals[:7]  if v is not None)
+    compras = sum(_parse(v) for v in vals[7:]  if v is not None)
     margem  = receita - compras
     if receita == 0 and compras == 0: return '—'
     return f"R$ {margem:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
@@ -1770,17 +2001,17 @@ _CV_IDS   = ['dre-cv-sist','dre-cv-terc','dre-cv-exped','dre-cv-honor','dre-cv-m
 
 @app.callback(
     Output('res-lucro-bruto','children'),
-    Output('res-operacional', 'children'),
-    Output('res-liquido',     'children'),
+    Output('res-operacional','children'),
+    Output('res-liquido',    'children'),
     [Input(i,'value') for i in _REC_IDS + _COMP_IDS + _CF_IDS + _CV_IDS],
     prevent_initial_call=False,
 )
 def calc_resultados(*vals):
     nr = len(_REC_IDS); nc = len(_COMP_IDS); nf = len(_CF_IDS)
-    receita     = sum(_parse(v) for v in vals[:nr] if v is not None)
-    compras     = sum(_parse(v) for v in vals[nr:nr+nc] if v is not None)
+    receita     = sum(_parse(v) for v in vals[:nr]         if v is not None)
+    compras     = sum(_parse(v) for v in vals[nr:nr+nc]    if v is not None)
     cf          = sum(_parse(v) for v in vals[nr+nc:nr+nc+nf] if v is not None)
-    cv          = sum(_parse(v) for v in vals[nr+nc+nf:] if v is not None)
+    cv          = sum(_parse(v) for v in vals[nr+nc+nf:]   if v is not None)
     lucro_bruto = (receita - compras) - cf
     operacional = lucro_bruto - cv
     def fmt(v):
@@ -1791,29 +2022,37 @@ def calc_resultados(*vals):
 @app.callback(Output('fig-debitos', 'figure'), Input('dre-store', 'data'))
 def fig_debitos(d):
     if not d: d = {}
-    cf_items = {'Energia Elétrica': d.get('cf_energia',0), 'Telefone': d.get('cf_tel',0),
-                'Água': d.get('cf_agua',0), 'IPTU': d.get('cf_iptu',0),
-                'Salários/13º/Férias': d.get('cf_sal',0), 'Encargos Sociais': d.get('cf_enc',0),
-                'Impostos': d.get('cf_imp',0), 'Seguro Vida': d.get('cf_seg',0), 'Diárias': d.get('cf_diar',0)}
-    cv_items = {'Sistemas': d.get('cv_sist',0), 'Serv. Terceiros': d.get('cv_terc',0),
-                'Expediente': d.get('cv_exped',0), 'Honorários': d.get('cv_honor',0),
-                'Manutenção': d.get('cv_manut',0), 'Viagens': d.get('cv_viag',0),
-                'Taxas': d.get('cv_taxas',0), 'Uniformes': d.get('cv_unif',0),
-                'Limpeza': d.get('cv_limp',0), 'Aluguéis': d.get('cv_alug',0),
-                'Caixa': d.get('cv_caixa',0), 'Juros Mora': d.get('cv_mora',0),
-                'Tarifas Banco': d.get('cv_banco',0), 'Tarifas Cartão': d.get('cv_cart',0),
-                'Brindes': d.get('cv_brindes',0), 'Utensílios': d.get('cv_utens',0),
-                'Veículos': d.get('cv_veic',0), 'Seg. Edificações': d.get('cv_segpred',0),
-                'Desp. Gerais': d.get('cv_gerais',0), 'Gás GLP': d.get('cv_gas',0),
-                'Estoque': d.get('cv_estoque',0), 'Comissões': d.get('cv_comiss',0)}
-    compras_items = {'Bebidas': d.get('c_bebidas',0), 'Bolos/Tortas': d.get('c_bolos',0),
-                     'Carnes': d.get('c_carnes',0), 'Cigarros': d.get('c_cigarros',0),
-                     'Conveniência': d.get('c_conv',0), 'Est. Cozinha': d.get('c_estcoz',0),
-                     'Picolés': d.get('c_picoles',0), 'Salgados': d.get('c_salgados',0),
-                     'Insumos': d.get('c_insumos',0), 'Embalagens': d.get('c_embal',0),
-                     'Recarga': d.get('c_recarga',0), 'Bichos/Brinq.': d.get('c_bichos',0), 'Buffet': d.get('c_buffet',0)}
-    total_cf = sum(cf_items.values()); total_cv = sum(cv_items.values())
-    total_deb = total_cf + total_cv; total_comp = sum(compras_items.values())
+    cf_items = {
+        'Energia Elétrica': d.get('cf_energia',0), 'Telefone': d.get('cf_tel',0),
+        'Água': d.get('cf_agua',0), 'IPTU': d.get('cf_iptu',0),
+        'Salários/13º/Férias': d.get('cf_sal',0), 'Encargos Sociais': d.get('cf_enc',0),
+        'Impostos': d.get('cf_imp',0), 'Seguro Vida': d.get('cf_seg',0), 'Diárias': d.get('cf_diar',0),
+    }
+    cv_items = {
+        'Sistemas': d.get('cv_sist',0), 'Serv. Terceiros': d.get('cv_terc',0),
+        'Expediente': d.get('cv_exped',0), 'Honorários': d.get('cv_honor',0),
+        'Manutenção': d.get('cv_manut',0), 'Viagens': d.get('cv_viag',0),
+        'Taxas': d.get('cv_taxas',0), 'Uniformes': d.get('cv_unif',0),
+        'Limpeza': d.get('cv_limp',0), 'Aluguéis': d.get('cv_alug',0),
+        'Caixa': d.get('cv_caixa',0), 'Juros Mora': d.get('cv_mora',0),
+        'Tarifas Banco': d.get('cv_banco',0), 'Tarifas Cartão': d.get('cv_cart',0),
+        'Brindes': d.get('cv_brindes',0), 'Utensílios': d.get('cv_utens',0),
+        'Veículos': d.get('cv_veic',0), 'Seg. Edificações': d.get('cv_segpred',0),
+        'Desp. Gerais': d.get('cv_gerais',0), 'Gás GLP': d.get('cv_gas',0),
+        'Estoque': d.get('cv_estoque',0), 'Comissões': d.get('cv_comiss',0),
+    }
+    compras_items = {
+        'Bebidas': d.get('c_bebidas',0), 'Bolos/Tortas': d.get('c_bolos',0),
+        'Carnes': d.get('c_carnes',0), 'Cigarros': d.get('c_cigarros',0),
+        'Conveniência': d.get('c_conv',0), 'Est. Cozinha': d.get('c_estcoz',0),
+        'Picolés': d.get('c_picoles',0), 'Salgados': d.get('c_salgados',0),
+        'Insumos': d.get('c_insumos',0), 'Embalagens': d.get('c_embal',0),
+        'Recarga': d.get('c_recarga',0), 'Bichos/Brinq.': d.get('c_bichos',0), 'Buffet': d.get('c_buffet',0),
+    }
+    total_cf    = sum(cf_items.values())
+    total_cv    = sum(cv_items.values())
+    total_deb   = total_cf + total_cv
+    total_comp  = sum(compras_items.values())
     total_geral = total_deb + total_comp
     fig = go.Figure()
     for nome, val in cf_items.items():
@@ -1827,8 +2066,11 @@ def fig_debitos(d):
         if val > 0:
             fig.add_trace(go.Bar(name=nome, x=['Compras Mercadorias'], y=[val], marker_color='rgba(201,168,76,0.75)', marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
     fig.add_trace(go.Bar(name='Total Geral', x=['Total Geral'], y=[total_geral], marker_color='rgba(92,158,255,0.9)', marker_line_width=0, showlegend=False, hovertemplate='<b>Total Geral</b><br>R$ %{y:,.2f}<extra></extra>'))
-    layout = dict(CHART_LAYOUT); layout['barmode']='stack'; layout['margin']=dict(l=16,r=16,t=16,b=80); layout['showlegend']=False
-    layout['xaxis']=dict(gridcolor='rgba(255,255,255,0.04)', tickfont=dict(size=11,color='#e8ede9',family='Sora'))
+    layout = dict(CHART_LAYOUT)
+    layout['barmode']  = 'stack'
+    layout['margin']   = dict(l=16,r=16,t=16,b=80)
+    layout['showlegend'] = False
+    layout['xaxis']    = dict(gridcolor='rgba(255,255,255,0.04)', tickfont=dict(size=11,color='#e8ede9',family='Sora'))
     fig.update_layout(**layout)
     for label, val in [('Custos Fixos',total_cf),('Custos Variáveis',total_cv),('Total Débitos',total_deb),('Compras Mercadorias',total_comp),('Total Geral',total_geral)]:
         if val > 0:
@@ -1839,28 +2081,37 @@ def fig_debitos(d):
 def fig_receitas(d):
     if not d: d = {}
     vendas_merc  = {'Vendas à Vista': d.get('venda_vista',0), 'Vendas a Prazo': d.get('venda_prazo',0)}
-    vendas_grupo = {'Bolos e Tortas': d.get('g_bolos',0), 'Buffet': d.get('g_buffet',0),
-                    'Cafés e Sucos': d.get('g_cafes',0), 'Lanches': d.get('g_lanches',0),
-                    'Porções': d.get('g_porcoes',0), 'Salgados': d.get('g_salgados',0),
-                    'Drinks': d.get('g_drinks',0), 'Conveniência': d.get('g_conv',0),
-                    'Cigarros': d.get('g_cigarros',0), 'Bebidas': d.get('g_bebidas',0),
-                    'Picolé': d.get('g_picole',0), 'Est. Cozinha': d.get('g_estcoz',0),
-                    'Bichos/Brinq.': d.get('g_bichos',0), 'Carnes': d.get('g_carnes',0)}
-    outras_rec = {'Juros Recebidos': d.get('or_juros',0), 'Aluguéis': d.get('or_alug',0),
-                  'Outras Receitas': d.get('or_outras',0), 'Fundos Invest.': d.get('or_fundos',0),
-                  'Bonificações': d.get('or_bonif',0)}
-    total_merc = sum(vendas_merc.values()); total_grupo = sum(vendas_grupo.values())
-    total_outras = sum(outras_rec.values()); total_rec = total_merc + total_grupo + total_outras
+    vendas_grupo = {
+        'Bolos e Tortas': d.get('g_bolos',0), 'Buffet': d.get('g_buffet',0),
+        'Cafés e Sucos': d.get('g_cafes',0), 'Lanches': d.get('g_lanches',0),
+        'Porções': d.get('g_porcoes',0), 'Salgados': d.get('g_salgados',0),
+        'Drinks': d.get('g_drinks',0), 'Conveniência': d.get('g_conv',0),
+        'Cigarros': d.get('g_cigarros',0), 'Bebidas': d.get('g_bebidas',0),
+        'Picolé': d.get('g_picole',0), 'Est. Cozinha': d.get('g_estcoz',0),
+        'Bichos/Brinq.': d.get('g_bichos',0), 'Carnes': d.get('g_carnes',0),
+    }
+    outras_rec = {
+        'Juros Recebidos': d.get('or_juros',0), 'Aluguéis': d.get('or_alug',0),
+        'Outras Receitas': d.get('or_outras',0), 'Fundos Invest.': d.get('or_fundos',0),
+        'Bonificações': d.get('or_bonif',0),
+    }
+    total_merc   = sum(vendas_merc.values())
+    total_grupo  = sum(vendas_grupo.values())
+    total_outras = sum(outras_rec.values())
+    total_rec    = total_merc + total_grupo + total_outras
     fig = go.Figure()
     for nome, val in vendas_merc.items():
-        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Vendas Mercadorias'], y=[val], marker_color='rgba(61,220,132,0.8)', marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Vendas Mercadorias'], y=[val], marker_color='rgba(61,220,132,0.8)',  marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
     for nome, val in vendas_grupo.items():
-        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Vendas por Grupo'], y=[val], marker_color='rgba(61,180,100,0.75)', marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Vendas por Grupo'],   y=[val], marker_color='rgba(61,180,100,0.75)', marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
     for nome, val in outras_rec.items():
-        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Outras Receitas'], y=[val], marker_color='rgba(92,158,255,0.8)', marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
+        if val > 0: fig.add_trace(go.Bar(name=nome, x=['Outras Receitas'],    y=[val], marker_color='rgba(92,158,255,0.8)',  marker_line_width=0, showlegend=True, hovertemplate=f'<b>{nome}</b><br>R$ %{{y:,.2f}}<extra></extra>'))
     fig.add_trace(go.Bar(name='Receita Total', x=['Receita Total'], y=[total_rec], marker_color='rgba(61,220,132,0.95)', marker_line_width=0, showlegend=False, hovertemplate='<b>Receita Total</b><br>R$ %{y:,.2f}<extra></extra>'))
-    layout = dict(CHART_LAYOUT); layout['barmode']='stack'; layout['margin']=dict(l=16,r=16,t=16,b=80); layout['showlegend']=False
-    layout['xaxis']=dict(gridcolor='rgba(255,255,255,0.04)', tickfont=dict(size=11,color='#e8ede9',family='Sora'))
+    layout = dict(CHART_LAYOUT)
+    layout['barmode']    = 'stack'
+    layout['margin']     = dict(l=16,r=16,t=16,b=80)
+    layout['showlegend'] = False
+    layout['xaxis']      = dict(gridcolor='rgba(255,255,255,0.04)', tickfont=dict(size=11,color='#e8ede9',family='Sora'))
     fig.update_layout(**layout)
     for label, val in [('Vendas Mercadorias',total_merc),('Vendas por Grupo',total_grupo),('Outras Receitas',total_outras),('Receita Total',total_rec)]:
         if val > 0:
@@ -1886,52 +2137,6 @@ def update_csv_banner(csv_data):
         html.Div([html.Strong(f"✓ CSV importado · {n} campos preenchidos — "), "você pode editar manualmente."]),
     ], {'borderColor':'rgba(61,220,132,0.3)','background':'rgba(61,220,132,0.06)'}
 
-def make_fig_main():
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name='Receita', x=MESES, y=RECEITA, marker_color='rgba(61,220,132,0.7)', marker_line_width=0))
-    fig.add_trace(go.Bar(name='Despesa', x=MESES, y=DESPESA, marker_color='rgba(255,92,92,0.6)', marker_line_width=0))
-    fig.add_trace(go.Scatter(name='Lucro', x=MESES, y=LUCRO, mode='lines+markers',
-                             line=dict(color='#e8c97a',width=2.5), marker=dict(size=6,color='#e8c97a')))
-    fig.update_layout(**CHART_LAYOUT, barmode='group')
-    return fig
-
-def _home_feature_card(icon, title, desc, nav_id, badge=None, badge_cls="up"):
-    return html.Div(style={
-        'background':'#131714','border':'1px solid rgba(255,255,255,0.07)',
-        'borderRadius':'12px','padding':'28px 26px','display':'flex',
-        'flexDirection':'column','gap':'12px','transition':'all 0.3s',
-        'cursor':'default','position':'relative','overflow':'hidden',
-    }, children=[
-        html.Div(style={
-            'position':'absolute','top':0,'left':0,'right':0,'height':'2px',
-            'background':'linear-gradient(90deg,var(--green),transparent)','opacity':'0.4',
-        }),
-        html.Div(style={'display':'flex','alignItems':'center','justifyContent':'space-between'}, children=[
-            html.Div(icon, style={'fontSize':'26px'}),
-            html.Div(badge, className=f'kpi-badge {badge_cls}') if badge else html.Div(),
-        ]),
-        html.Div(title, style={
-            'fontFamily':"'Playfair Display',serif",'fontSize':'17px',
-            'fontWeight':'700','color':'#e8ede9','lineHeight':'1.2',
-        }),
-        html.Div(desc, style={
-            'fontSize':'12px','color':'#8fa894','lineHeight':'1.6',
-            'fontFamily':"'Sora',sans-serif",'flex':'1',
-        }),
-        html.Button("Acessar →", id=f'home-btn-{nav_id}',
-            style={
-                'marginTop':'8px','padding':'10px 20px','borderRadius':'6px',
-                'border':'1px solid rgba(61,220,132,0.3)',
-                'background':'rgba(61,220,132,0.07)','color':'#3ddc84',
-                'fontFamily':"'Space Mono',monospace",'fontSize':'10px',
-                'fontWeight':'700','letterSpacing':'2px','textTransform':'uppercase',
-                'cursor':'pointer','width':'fit-content',
-                'transition':'all 0.25s',
-            }
-        ),
-    ])
-
-
 # MODAL SALVAR DRE
 @app.callback(
     Output('modal-save-overlay','style'),
@@ -1952,7 +2157,7 @@ def toggle_save_modal(*_):
 def save_dre_to_log(n, mes, ano, dre_data, log):
     if not n: raise dash.exceptions.PreventUpdate
     if not mes or not ano: return dash.no_update, "⚠ Selecione mês e ano."
-    if not dre_data: return dash.no_update, "⚠ Nenhum dado no DRE."
+    if not dre_data:       return dash.no_update, "⚠ Nenhum dado no DRE."
     log = log or {}
     key = f"{ano}-{mes}"
     MESES_PT = {'01':'Janeiro','02':'Fevereiro','03':'Março','04':'Abril','05':'Maio','06':'Junho',
@@ -1991,9 +2196,12 @@ def render_history_list(style, mes_filter, ano_filter, log):
         def rbr(val): return f"R$ {val:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
         rows.append(html.Div(style={'background':'#131714','border':'1px solid rgba(255,255,255,0.07)','borderRadius':'10px','padding':'16px 20px','marginBottom':'10px'}, children=[
             html.Div(style={'display':'flex','justifyContent':'space-between','alignItems':'center','marginBottom':'12px'}, children=[
-                html.Div([html.Div(entry.get('_label',key), style={'fontFamily':"'Playfair Display',serif",'fontSize':'16px','fontWeight':'700','color':'#e8ede9'}),
-                          html.Div(f"Salvo em {entry.get('_saved_at','')}", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','marginTop':'2px'})]),
-                html.Button("📂 Carregar", id={'type':'btn-load-dre','index':key}, style={'background':'rgba(61,220,132,0.1)','border':'1px solid rgba(61,220,132,0.3)','color':'#3ddc84','padding':'7px 14px','borderRadius':'6px','cursor':'pointer','fontFamily':"'Space Mono',monospace",'fontSize':'10px','fontWeight':'700'}),
+                html.Div([
+                    html.Div(entry.get('_label',key), style={'fontFamily':"'Playfair Display',serif",'fontSize':'16px','fontWeight':'700','color':'#e8ede9'}),
+                    html.Div(f"Salvo em {entry.get('_saved_at','')}", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','marginTop':'2px'}),
+                ]),
+                html.Button("📂 Carregar", id={'type':'btn-load-dre','index':key},
+                    style={'background':'rgba(61,220,132,0.1)','border':'1px solid rgba(61,220,132,0.3)','color':'#3ddc84','padding':'7px 14px','borderRadius':'6px','cursor':'pointer','fontFamily':"'Space Mono',monospace",'fontSize':'10px','fontWeight':'700'}),
             ]),
             html.Div(style={'display':'grid','gridTemplateColumns':'1fr 1fr 1fr 1fr','gap':'8px'}, children=[
                 html.Div(style={'background':'rgba(61,220,132,0.06)','borderRadius':'6px','padding':'8px 12px'}, children=[html.Div("Receita",style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','textTransform':'uppercase','letterSpacing':'2px'}), html.Div(rbr(rv),style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#3ddc84','marginTop':'3px','fontWeight':'700'})]),
@@ -2011,14 +2219,14 @@ def render_history_list(style, mes_filter, ano_filter, log):
     Output('modal-history-overlay', 'style', allow_duplicate=True),
     Output('toast', 'children', allow_duplicate=True),
     Output('toast', 'style', allow_duplicate=True),
-    Input({'type':'btn-load-dre','index':dash.ALL}, 'n_clicks'),
+    Input({'type':'btn-load-dre','index':ALL}, 'n_clicks'),
     State('dre-log','data'), prevent_initial_call=True,
 )
 def load_dre_from_history(n_clicks_list, log):
     if not any(n for n in n_clicks_list if n): raise dash.exceptions.PreventUpdate
     triggered = ctx.triggered_id
     if not triggered: raise dash.exceptions.PreventUpdate
-    key = triggered['index']
+    key   = triggered['index']
     entry = (log or {}).get(key)
     if not entry: raise dash.exceptions.PreventUpdate
     label = entry.get('_label', key)
@@ -2052,16 +2260,15 @@ def processar_upload_extrato(contents, filename):
     except Exception as e:
         toast = html.Div([
             html.Span("⚠", style={'color':'#ff5c5c','fontWeight':'700','fontSize':'16px'}),
-            html.Span(f" Erro ao processar extrato: {str(e)}", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}),
+            html.Span(f" Erro: {str(e)[:80]}", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}),
         ], className='toast')
         return dash.no_update, "ERRO NO ARQUIVO", "upload-status", toast, {'display':'block'}
 
-    # Serializa para JSON
     df_json = df.to_json(date_format='iso', orient='records', force_ascii=False)
     n = len(df)
     toast = html.Div([
         html.Span("✓", style={'color':'#3ddc84','fontWeight':'700','fontSize':'16px'}),
-        html.Span(f" {filename} processado · {n} transações classificadas", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}),
+        html.Span(f" {filename} · {n} transações classificadas", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}),
     ], className='toast')
     return df_json, f"✓ {n} TRANSAÇÕES", "upload-status loaded", toast, {'display':'block'}
 
@@ -2077,7 +2284,6 @@ def processar_upload_extrato(contents, filename):
     prevent_initial_call=False,
 )
 def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
-    # ── Estado vazio ──────────────────────────────────────────────────────────
     if not extrato_json:
         empty = html.Div(
             style={'textAlign':'center','padding':'60px 20px','color':'#4d5e52'},
@@ -2085,17 +2291,17 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
                 html.Div("🏦", style={'fontSize':'48px','marginBottom':'16px'}),
                 html.Div("Nenhum extrato importado ainda",
                          style={'fontFamily':"'Playfair Display',serif",'fontSize':'20px','color':'#8fa894','marginBottom':'8px'}),
-                html.Div("Importe um arquivo Excel de extrato bancário acima para visualizar a conciliação.",
+                html.Div("Importe um arquivo Excel (.xls ou .xlsx) de extrato bancário acima.",
                          style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','letterSpacing':'1px'}),
             ]
         )
         return html.Div(), html.Div(), empty
 
-    import json
-    df = pd.DataFrame(json.loads(extrato_json))
+    import json as _json
+    df = pd.DataFrame(_json.loads(extrato_json))
     df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0)
 
-    # ── Filtros ───────────────────────────────────────────────────────────────
+    # Filtros
     df_f = df.copy()
     if filtro_tipo and filtro_tipo != 'TODOS':
         df_f = df_f[df_f['Tipo'] == filtro_tipo]
@@ -2104,7 +2310,7 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
     if filtro_busca:
         df_f = df_f[df_f['Descrição'].str.upper().str.contains(filtro_busca.upper(), na=False)]
 
-    # ── KPIs ──────────────────────────────────────────────────────────────────
+    # KPIs
     total_entrada = df[df['Valor (R$)'] > 0]['Valor (R$)'].sum()
     total_saida   = df[df['Valor (R$)'] < 0]['Valor (R$)'].sum()
     saldo_periodo = total_entrada + total_saida
@@ -2125,8 +2331,7 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
         kpi_card("Tipos Detectados", str(n_tipos),        "Categorias únicas", "TIPOS",  "wait", "gold"),
     ])
 
-    # ── Gráficos ──────────────────────────────────────────────────────────────
-    # Gráfico 1: Entradas vs Saídas por Tipo
+    # Gráficos
     tipo_group = df.groupby('Tipo')['Valor (R$)'].agg(
         Entradas=lambda x: x[x > 0].sum(),
         Saidas=lambda x: abs(x[x < 0].sum())
@@ -2143,13 +2348,11 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
             marker_color='rgba(255,92,92,0.65)', marker_line_width=0,
             hovertemplate='<b>%{x}</b><br>Saída: R$ %{y:,.2f}<extra></extra>'))
     layout1 = dict(CHART_LAYOUT)
-    layout1['barmode']    = 'group'
-    layout1['margin']     = dict(l=16, r=16, t=16, b=100)
+    layout1['barmode'] = 'group'; layout1['margin'] = dict(l=16,r=16,t=16,b=100)
     layout1['showlegend'] = True
-    layout1['xaxis']      = dict(gridcolor='rgba(255,255,255,0.04)', tickfont=dict(size=10,color='#e8ede9',family='Sora'), tickangle=-30)
+    layout1['xaxis'] = dict(gridcolor='rgba(255,255,255,0.04)', tickfont=dict(size=10,color='#e8ede9',family='Sora'), tickangle=-30)
     fig_tipos.update_layout(**layout1)
 
-    # Gráfico 2: Pizza de volume por tipo (entradas)
     entrada_tipos = df[df['Valor (R$)'] > 0].groupby('Tipo')['Valor (R$)'].sum().reset_index()
     entrada_tipos = entrada_tipos[entrada_tipos['Valor (R$)'] > 0].sort_values('Valor (R$)', ascending=False)
     colors_pie = [TYPE_COLORS.get(t, '#8fa894') for t in entrada_tipos['Tipo']]
@@ -2161,8 +2364,7 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
             textfont=dict(family='Space Mono', size=9, color='#0d0f0e'),
             hovertemplate='<b>%{label}</b><br>R$ %{value:,.2f}<br>%{percent}<extra></extra>',
         ))
-    layout2 = dict(CHART_LAYOUT)
-    layout2['margin'] = dict(l=16, r=16, t=16, b=60)
+    layout2 = dict(CHART_LAYOUT); layout2['margin'] = dict(l=16,r=16,t=16,b=60)
     fig_pizza.update_layout(**layout2)
 
     charts = html.Div(className='charts-grid-2', style={'marginBottom':'20px'}, children=[
@@ -2182,7 +2384,7 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
         ]),
     ])
 
-    # ── Tabela ────────────────────────────────────────────────────────────────
+    # Tabela
     rows_html = []
     for _, row in df_f.iterrows():
         val  = float(row['Valor (R$)'])
@@ -2190,10 +2392,8 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
         tipo = row['Tipo']
         tc   = TYPE_COLORS.get(tipo, '#8fa894')
         tc_rgb = tc.lstrip('#')
-        r_int  = int(tc_rgb[0:2], 16)
-        g_int  = int(tc_rgb[2:4], 16)
-        b_int  = int(tc_rgb[4:6], 16)
-        val_fmt = f"R$ {abs(val):,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+        r_int = int(tc_rgb[0:2], 16); g_int = int(tc_rgb[2:4], 16); b_int = int(tc_rgb[4:6], 16)
+        val_fmt   = f"R$ {abs(val):,.2f}".replace(',','X').replace('.', ',').replace('X','.')
         saldo_val = row.get('Saldo (R$)', None)
         try:
             saldo_fmt = f"R$ {float(saldo_val):,.2f}".replace(',','X').replace('.', ',').replace('X','.') if saldo_val is not None else '—'
@@ -2202,39 +2402,26 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
 
         rows_html.append(html.Tr([
             html.Td(str(row['Data']),         style={'padding':'9px 14px','color':'#8fa894','fontFamily':"'Space Mono',monospace",'fontSize':'10px'}),
-            html.Td(html.Span("⬆ " + es if es == "ENTRADA" else "⬇ " + es,
-                               className='es-entrada' if es == "ENTRADA" else 'es-saida'),
-                    style={'padding':'9px 14px'}),
-            html.Td(html.Span(tipo, className='tipo-badge',
-                               style={'color':tc,'background':f'rgba({r_int},{g_int},{b_int},0.12)','border':f'1px solid rgba({r_int},{g_int},{b_int},0.3)'}),
-                    style={'padding':'9px 14px'}),
-            html.Td(str(row['Descrição'])[:60] + ('…' if len(str(row['Descrição'])) > 60 else ''),
-                    style={'padding':'9px 14px','color':'#8fa894','fontSize':'11px','maxWidth':'260px','overflow':'hidden'}),
-            html.Td(str(row.get('Documento','')),
-                    style={'padding':'9px 14px','fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52'}),
-            html.Td(str(row['Categoria']),
-                    style={'padding':'9px 14px','fontSize':'10px','color':'#8fa894','fontFamily':"'Space Mono',monospace"}),
-            html.Td(val_fmt,
-                    className='val-entrada' if val > 0 else 'val-saida',
-                    style={'padding':'9px 14px','textAlign':'right'}),
-            html.Td(saldo_fmt,
-                    className='val-saldo',
-                    style={'padding':'9px 14px','textAlign':'right'}),
+            html.Td(html.Span("⬆ " + es if es == "ENTRADA" else "⬇ " + es, className='es-entrada' if es == "ENTRADA" else 'es-saida'), style={'padding':'9px 14px'}),
+            html.Td(html.Span(tipo, className='tipo-badge', style={'color':tc,'background':f'rgba({r_int},{g_int},{b_int},0.12)','border':f'1px solid rgba({r_int},{g_int},{b_int},0.3)'}), style={'padding':'9px 14px'}),
+            html.Td(str(row['Descrição'])[:60] + ('…' if len(str(row['Descrição'])) > 60 else ''), style={'padding':'9px 14px','color':'#8fa894','fontSize':'11px','maxWidth':'260px','overflow':'hidden'}),
+            html.Td(str(row.get('Documento','')), style={'padding':'9px 14px','fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52'}),
+            html.Td(str(row['Categoria']),    style={'padding':'9px 14px','fontSize':'10px','color':'#8fa894','fontFamily':"'Space Mono',monospace"}),
+            html.Td(val_fmt,  className='val-entrada' if val > 0 else 'val-saida', style={'padding':'9px 14px','textAlign':'right'}),
+            html.Td(saldo_fmt, className='val-saldo', style={'padding':'9px 14px','textAlign':'right'}),
         ]))
 
     tabela = html.Div(className='table-card', children=[
         html.Div(className='table-header', children=[
-            html.Div(f"Transações — {len(df_f)} registros exibidos de {len(df)} total", className='table-header-title'),
+            html.Div(f"Transações — {len(df_f)} exibidas de {len(df)} total", className='table-header-title'),
             html.Div(style={'display':'flex','gap':'8px'}, children=[
-                html.Span(f"✓ Filtros ativos" if (filtro_tipo != 'TODOS' or filtro_es != 'TODOS' or filtro_busca) else "",
+                html.Span("✓ Filtros ativos" if (filtro_tipo != 'TODOS' or filtro_es != 'TODOS' or filtro_busca) else "",
                           style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#3ddc84'}),
             ]),
         ]),
         html.Div(className='conc-table-wrap', children=[
             html.Table(className='conc-table', children=[
-                html.Thead(html.Tr([
-                    html.Th(h) for h in ["Data","E/S","Tipo","Descrição","Documento","Categoria","Valor","Saldo"]
-                ])),
+                html.Thead(html.Tr([html.Th(h) for h in ["Data","E/S","Tipo","Descrição","Documento","Categoria","Valor","Saldo"]])),
                 html.Tbody(rows_html if rows_html else [
                     html.Tr(html.Td("Nenhuma transação encontrada com os filtros aplicados.",
                                     colSpan=8, style={'textAlign':'center','padding':'40px','color':'#4d5e52',
@@ -2256,10 +2443,16 @@ def render_conciliacao(extrato_json, filtro_tipo, filtro_es, filtro_busca):
     prevent_initial_call=True,
 )
 def exportar_conciliacao(n, extrato_json):
-    if not n or not extrato_json:
-        raise dash.exceptions.PreventUpdate
-    import json
-    df = pd.DataFrame(json.loads(extrato_json))
+    if not n: raise dash.exceptions.PreventUpdate
+    if not extrato_json:
+        toast = html.Div([
+            html.Span("⚠", style={'color':'#ff5c5c','fontWeight':'700','fontSize':'16px'}),
+            html.Span(" Importe um extrato antes de exportar.", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}),
+        ], className='toast')
+        return dash.no_update, toast, {'display':'block'}
+
+    import json as _json
+    df = pd.DataFrame(_json.loads(extrato_json))
     df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0)
     excel_bytes = gerar_excel_conciliacao(df)
     fname = f"Conciliacao_Bancaria_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
@@ -2292,7 +2485,6 @@ app.clientside_callback(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _kpi_inner(label, value_str, sub, badge, badge_cls, value_cls=""):
-    """Retorna o conteúdo interno de um kpi-card."""
     return [
         html.Div(className='kpi-top', children=[
             html.Div(label, className='kpi-label'),
@@ -2305,10 +2497,8 @@ def _kpi_inner(label, value_str, sub, badge, badge_cls, value_cls=""):
 
 def _brl(v):
     if v == 0: return "R$ 0,00"
-    if abs(v) >= 1_000_000:
-        return f"R$ {v/1e6:.2f}M".replace('.', ',')
-    if abs(v) >= 1_000:
-        return f"R$ {v/1000:.1f}K".replace('.', ',')
+    if abs(v) >= 1_000_000: return f"R$ {v/1e6:.2f}M".replace('.', ',')
+    if abs(v) >= 1_000:     return f"R$ {v/1000:.1f}K".replace('.', ',')
     return f"R$ {v:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
 
 def _pct(v, total):
@@ -2343,8 +2533,7 @@ def update_indicadores(d):
         'c_picoles','c_salgados','c_insumos','c_embal','c_recarga','c_bichos','c_buffet'])
 
     total_cf = sum(v(k) for k in [
-        'cf_energia','cf_tel','cf_agua','cf_iptu','cf_sal',
-        'cf_enc','cf_imp','cf_seg','cf_diar'])
+        'cf_energia','cf_tel','cf_agua','cf_iptu','cf_sal','cf_enc','cf_imp','cf_seg','cf_diar'])
 
     total_cv = sum(v(k) for k in [
         'cv_sist','cv_terc','cv_exped','cv_honor','cv_manut','cv_viag',
@@ -2356,13 +2545,12 @@ def update_indicadores(d):
     lucro_bruto    = margem_contrib - total_cf
     lucro_liquido  = lucro_bruto - total_cv
 
-    # Classificação da margem %
     if receita_total > 0:
         m_pct = lucro_liquido / receita_total * 100
-        if m_pct >= 30:    m_badge, m_cls = "EXCELENTE", "up"
-        elif m_pct >= 15:  m_badge, m_cls = "BOM", "up"
-        elif m_pct >= 0:   m_badge, m_cls = "ATENÇÃO", "wait"
-        else:              m_badge, m_cls = "PREJUÍZO", "down"
+        if m_pct >= 30:   m_badge, m_cls = "EXCELENTE", "up"
+        elif m_pct >= 15: m_badge, m_cls = "BOM", "up"
+        elif m_pct >= 0:  m_badge, m_cls = "ATENÇÃO", "wait"
+        else:             m_badge, m_cls = "PREJUÍZO", "down"
     else:
         m_pct, m_badge, m_cls = 0, "AGUARD.", "wait"
 
@@ -2374,18 +2562,17 @@ def update_indicadores(d):
     lb, lcls = lucro_badge(lucro_liquido)
     gb, gcls = lucro_badge(lucro_bruto)
     mb, mcls = lucro_badge(margem_contrib)
-
     RT = receita_total if receita_total else 1
 
     return [
-        _kpi_inner("Receita Total",        _brl(receita_total),   f"Vendas + Outras receitas", "RECEITA", "up"),
-        _kpi_inner("Margem de Contribuição",_brl(margem_contrib), _pct(margem_contrib, RT) + " da receita", mb, mcls, "green" if margem_contrib >= 0 else "red"),
-        _kpi_inner("Lucro Bruto",          _brl(lucro_bruto),     _pct(lucro_bruto, RT) + " da receita", gb, gcls, "green" if lucro_bruto >= 0 else "red"),
-        _kpi_inner("Resultado Líquido",    _brl(lucro_liquido),   _pct(lucro_liquido, RT) + " da receita", lb, lcls, "green" if lucro_liquido >= 0 else "red"),
-        _kpi_inner("Total Compras",        _brl(total_compras),   _pct(total_compras, RT) + " da receita", "CUSTO", "down"),
-        _kpi_inner("Custos Fixos",         _brl(total_cf),        _pct(total_cf, RT) + " da receita", "FIXO", "wait"),
-        _kpi_inner("Custos Variáveis",     _brl(total_cv),        _pct(total_cv, RT) + " da receita", "VARIÁVEL", "wait"),
-        _kpi_inner("Margem Líquida %",     f"{m_pct:.1f}%",       "Sobre Receita Total", m_badge, m_cls, "gold" if m_pct >= 15 else ("red" if m_pct < 0 else "")),
+        _kpi_inner("Receita Total",         _brl(receita_total),  "Vendas + Outras receitas",        "RECEITA", "up"),
+        _kpi_inner("Margem de Contribuição", _brl(margem_contrib), _pct(margem_contrib,RT)+" da rec.", mb,   mcls, "green" if margem_contrib >= 0 else "red"),
+        _kpi_inner("Lucro Bruto",           _brl(lucro_bruto),    _pct(lucro_bruto,RT)+" da rec.",    gb,   gcls, "green" if lucro_bruto >= 0 else "red"),
+        _kpi_inner("Resultado Líquido",     _brl(lucro_liquido),  _pct(lucro_liquido,RT)+" da rec.",  lb,   lcls, "green" if lucro_liquido >= 0 else "red"),
+        _kpi_inner("Total Compras",         _brl(total_compras),  _pct(total_compras,RT)+" da rec.",  "CUSTO",  "down"),
+        _kpi_inner("Custos Fixos",          _brl(total_cf),       _pct(total_cf,RT)+" da rec.",       "FIXO",   "wait"),
+        _kpi_inner("Custos Variáveis",      _brl(total_cv),       _pct(total_cv,RT)+" da rec.",       "VARIÁVEL","wait"),
+        _kpi_inner("Margem Líquida %",      f"{m_pct:.1f}%",      "Sobre Receita Total",              m_badge,  m_cls, "gold" if m_pct >= 15 else ("red" if m_pct < 0 else "")),
     ]
 
 
@@ -2399,6 +2586,264 @@ def toggle_indicadores(n):
     if n and n % 2 == 1:
         return {'display': 'none'}, "⊞ Mostrar Indicadores"
     return {'display': 'block'}, "⊟ Ocultar Indicadores"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACKS — ASSISTENTE IA
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_contexto_financeiro(dre_data, extrato_json):
+    """Monta resumo financeiro estruturado para contexto da IA."""
+    linhas = ["# DADOS FINANCEIROS — REDE GUAPO\n"]
+
+    if dre_data:
+        def v(k): return float(dre_data.get(k, 0) or 0)
+        def brl(x): return f"R$ {x:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+        receita_vendas = v('venda_vista') + v('venda_prazo')
+        outras_rec     = v('or_juros') + v('or_alug') + v('or_outras') + v('or_fundos') + v('or_bonif')
+        receita_total  = receita_vendas + outras_rec
+        total_compras  = sum(v(k) for k in ['c_bebidas','c_bolos','c_carnes','c_cigarros','c_conv','c_estcoz','c_picoles','c_salgados','c_insumos','c_embal','c_recarga','c_bichos','c_buffet'])
+        total_cf       = sum(v(k) for k in ['cf_energia','cf_tel','cf_agua','cf_iptu','cf_sal','cf_enc','cf_imp','cf_seg','cf_diar'])
+        total_cv       = sum(v(k) for k in ['cv_sist','cv_terc','cv_exped','cv_honor','cv_manut','cv_viag','cv_taxas','cv_unif','cv_limp','cv_alug','cv_caixa','cv_mora','cv_banco','cv_cart','cv_brindes','cv_utens','cv_veic','cv_segpred','cv_gerais','cv_gas','cv_estoque','cv_comiss'])
+        margem         = receita_total - total_compras
+        lucro_bruto    = margem - total_cf
+        lucro_liquido  = lucro_bruto - total_cv
+        pct = lambda x: f"{x/receita_total*100:.1f}%" if receita_total else "—"
+
+        linhas.append("## DRE — DEMONSTRAÇÃO DO RESULTADO")
+        linhas.append(f"- Receita Total: {brl(receita_total)}")
+        linhas.append(f"  - Vendas à Vista: {brl(v('venda_vista'))}")
+        linhas.append(f"  - Vendas a Prazo: {brl(v('venda_prazo'))}")
+        linhas.append(f"  - Outras Receitas: {brl(outras_rec)}")
+        linhas.append(f"- Total Compras: {brl(total_compras)} ({pct(total_compras)})")
+        grupos = {
+            'Bolos e Tortas': v('g_bolos'), 'Buffet': v('g_buffet'),
+            'Cafés e Sucos': v('g_cafes'), 'Lanches': v('g_lanches'),
+            'Porções': v('g_porcoes'), 'Salgados': v('g_salgados'),
+            'Drinks': v('g_drinks'), 'Conveniência': v('g_conv'),
+            'Cigarros': v('g_cigarros'), 'Bebidas': v('g_bebidas'),
+            'Picolé': v('g_picole'), 'Estoque Cozinha': v('g_estcoz'),
+            'Bichos/Brinquedos': v('g_bichos'), 'Carnes': v('g_carnes'),
+        }
+        ativos = sorted([(k, val) for k, val in grupos.items() if val > 0], key=lambda x: -x[1])
+        if ativos:
+            linhas.append("- Vendas por Grupo:")
+            for nome, val in ativos:
+                linhas.append(f"  - {nome}: {brl(val)}")
+        linhas.append(f"- Margem de Contribuição: {brl(margem)} ({pct(margem)})")
+        linhas.append(f"- Custos Fixos: {brl(total_cf)} ({pct(total_cf)})")
+        linhas.append(f"- Custos Variáveis: {brl(total_cv)} ({pct(total_cv)})")
+        linhas.append(f"- Lucro Bruto: {brl(lucro_bruto)} ({pct(lucro_bruto)})")
+        linhas.append(f"- Resultado Líquido: {brl(lucro_liquido)} ({pct(lucro_liquido)})")
+        top_custos = sorted([
+            ('Salários', v('cf_sal')), ('Impostos', v('cf_imp')), ('Encargos', v('cf_enc')),
+            ('Energia', v('cf_energia')), ('Aluguel', v('cv_alug')), ('Cartão', v('cv_cart')),
+            ('Terceiros', v('cv_terc')), ('Honorários', v('cv_honor')), ('Gás GLP', v('cv_gas')),
+        ], key=lambda x: -x[1])[:5]
+        if any(val > 0 for _, val in top_custos):
+            linhas.append("- Top custos:")
+            for nome, val in top_custos:
+                if val > 0:
+                    linhas.append(f"  - {nome}: {brl(val)}")
+        linhas.append("")
+    else:
+        linhas.append("## DRE: Nenhum dado preenchido.\n")
+
+    if extrato_json:
+        try:
+            df = pd.DataFrame(json.loads(extrato_json))
+            df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0)
+            entradas = df[df['Valor (R$)'] > 0]['Valor (R$)'].sum()
+            saidas   = df[df['Valor (R$)'] < 0]['Valor (R$)'].sum()
+            saldo    = entradas + saidas
+            def brl(x): return f"R$ {abs(x):,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+            linhas.append("## EXTRATO BANCÁRIO")
+            linhas.append(f"- Total de Transações: {len(df)}")
+            linhas.append(f"- Entradas: {brl(entradas)}")
+            linhas.append(f"- Saídas: {brl(abs(saidas))}")
+            linhas.append(f"- Saldo do Período: {brl(saldo)} ({'positivo' if saldo >= 0 else 'negativo'})")
+            tipo_sum = df.groupby('Tipo')['Valor (R$)'].sum().sort_values(ascending=False)
+            linhas.append("- Por Tipo:")
+            for tipo, val in tipo_sum.items():
+                linhas.append(f"  - {tipo}: {brl(val)} ({'entrada' if val > 0 else 'saída'})")
+            top_ent = df[df['Valor (R$)'] > 0].nlargest(3, 'Valor (R$)')[['Data','Descrição','Valor (R$)']]
+            if not top_ent.empty:
+                linhas.append("- Maiores entradas:")
+                for _, r in top_ent.iterrows():
+                    linhas.append(f"  - {r['Data']} | {str(r['Descrição'])[:50]} | {brl(r['Valor (R$)'])}")
+            top_sai = df[df['Valor (R$)'] < 0].nsmallest(3, 'Valor (R$)')[['Data','Descrição','Valor (R$)']]
+            if not top_sai.empty:
+                linhas.append("- Maiores saídas:")
+                for _, r in top_sai.iterrows():
+                    linhas.append(f"  - {r['Data']} | {str(r['Descrição'])[:50]} | {brl(r['Valor (R$)'])}")
+        except Exception:
+            linhas.append("## EXTRATO BANCÁRIO: Erro ao processar.\n")
+    else:
+        linhas.append("## EXTRATO BANCÁRIO: Nenhum extrato importado.\n")
+
+    return "\n".join(linhas)
+
+
+def _render_chat_window(historico):
+    msgs = [
+        html.Div(className='chat-msg-bot', children=[
+            html.Div("🤖", style={'fontSize':'22px','flexShrink':'0','marginTop':'2px'}),
+            html.Div(className='chat-bubble-bot', children=[
+                html.Strong("Olá! Sou o Assistente Financeiro da Rede Guapo. "),
+                html.Br(),
+                "Analiso seus dados do DRE e Conciliação Bancária em tempo real. Faça qualquer pergunta financeira.",
+            ]),
+        ])
+    ]
+    for msg in (historico or []):
+        role = msg.get('role'); text = msg.get('content','')
+        if role == 'user':
+            msgs.append(html.Div(className='chat-msg-user', children=[
+                html.Div("👤", style={'fontSize':'18px','flexShrink':'0','marginTop':'4px'}),
+                html.Div(text, className='chat-bubble-user'),
+            ]))
+        elif role == 'assistant':
+            parts = []
+            for line in text.split('\n'):
+                if not line.strip():
+                    parts.append(html.Br()); continue
+                segs = re.split(r'\*\*(.+?)\*\*', line)
+                for j, seg in enumerate(segs):
+                    if j % 2 == 1: parts.append(html.Strong(seg, style={'color':'#e8ede9'}))
+                    elif seg:      parts.append(seg)
+                parts.append(html.Br())
+            msgs.append(html.Div(className='chat-msg-bot', children=[
+                html.Div("🤖", style={'fontSize':'22px','flexShrink':'0','marginTop':'2px'}),
+                html.Div(parts, className='chat-bubble-bot'),
+            ]))
+    return msgs
+
+
+@app.callback(
+    Output('ia-data-status', 'children'),
+    Input('dre-store',     'data'),
+    Input('extrato-store', 'data'),
+    prevent_initial_call=False,
+)
+def update_ia_data_status(dre_data, extrato_json):
+    def v(k): return float((dre_data or {}).get(k, 0) or 0)
+    dre_ok     = bool(dre_data and sum(v(k) for k in ['venda_vista','venda_prazo']) > 0)
+    extrato_ok = bool(extrato_json)
+    receita_total = 0; lucro_liq = 0; n_tx = 0
+    if dre_ok:
+        receita_total = sum(v(k) for k in ['venda_vista','venda_prazo','or_juros','or_alug','or_outras','or_fundos','or_bonif'])
+        compras = sum(v(k) for k in ['c_bebidas','c_bolos','c_carnes','c_cigarros','c_conv','c_estcoz','c_picoles','c_salgados','c_insumos','c_embal','c_recarga','c_bichos','c_buffet'])
+        cf = sum(v(k) for k in ['cf_energia','cf_tel','cf_agua','cf_iptu','cf_sal','cf_enc','cf_imp','cf_seg','cf_diar'])
+        cv = sum(v(k) for k in ['cv_sist','cv_terc','cv_exped','cv_honor','cv_manut','cv_viag','cv_taxas','cv_unif','cv_limp','cv_alug','cv_caixa','cv_mora','cv_banco','cv_cart','cv_brindes','cv_utens','cv_veic','cv_segpred','cv_gerais','cv_gas','cv_estoque','cv_comiss'])
+        lucro_liq = receita_total - compras - cf - cv
+    if extrato_ok:
+        try:
+            n_tx = len(pd.DataFrame(json.loads(extrato_json)))
+        except Exception:
+            pass
+    def brl(x): return f"R$ {abs(x):,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+    def dot(ok): return html.Span("●", style={'color':'#3ddc84' if ok else '#4d5e52','marginRight':'6px','fontSize':'10px'})
+    return html.Div([
+        html.Div("DADOS DISPONÍVEIS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#3ddc84','textTransform':'uppercase','letterSpacing':'3px','marginBottom':'14px'}),
+        html.Div([dot(dre_ok),     html.Span("DRE Preenchido",    style={'fontSize':'12px','color':'#8fa894' if dre_ok else '#4d5e52'})], style={'marginBottom':'8px','display':'flex','alignItems':'center'}),
+        html.Div([dot(extrato_ok), html.Span("Extrato Bancário",  style={'fontSize':'12px','color':'#8fa894' if extrato_ok else '#4d5e52'})], style={'marginBottom':'16px','display':'flex','alignItems':'center'}),
+        html.Div(style={'borderTop':'1px solid rgba(255,255,255,0.06)','paddingTop':'14px'}, children=[
+            html.Div("RESUMO RÁPIDO", style={'fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','textTransform':'uppercase','letterSpacing':'2px','marginBottom':'12px'}),
+            html.Div(style={'display':'grid','gridTemplateColumns':'1fr 1fr','gap':'8px'}, children=[
+                html.Div(style={'background':'rgba(61,220,132,0.05)','borderRadius':'8px','padding':'10px'}, children=[
+                    html.Div("Receita",   style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','marginBottom':'4px'}),
+                    html.Div(brl(receita_total) if dre_ok else "—", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#3ddc84','fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':('rgba(61,220,132,0.05)' if lucro_liq >= 0 else 'rgba(255,92,92,0.05)'),'borderRadius':'8px','padding':'10px'}, children=[
+                    html.Div("Resultado", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','marginBottom':'4px'}),
+                    html.Div(brl(lucro_liq) if dre_ok else "—", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':('#3ddc84' if lucro_liq >= 0 else '#ff5c5c'),'fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':'rgba(92,158,255,0.05)','borderRadius':'8px','padding':'10px'}, children=[
+                    html.Div("Transações", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','marginBottom':'4px'}),
+                    html.Div(str(n_tx) if extrato_ok else "—", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#5c9eff','fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':'rgba(201,168,76,0.05)','borderRadius':'8px','padding':'10px'}, children=[
+                    html.Div("Margem %",  style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','marginBottom':'4px'}),
+                    html.Div(f"{lucro_liq/receita_total*100:.1f}%" if (dre_ok and receita_total) else "—", style={'fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#c9a84c','fontWeight':'700'}),
+                ]),
+            ]),
+        ]),
+    ])
+
+
+@app.callback(
+    Output('chat-input', 'value', allow_duplicate=True),
+    Input({'type': 'chat-sugestao', 'index': ALL}, 'n_clicks'),
+    prevent_initial_call=True,
+)
+def preencher_sugestao(n_clicks_list):
+    if not any(n for n in n_clicks_list if n):
+        raise dash.exceptions.PreventUpdate
+    tid = ctx.triggered_id
+    if tid is None:
+        raise dash.exceptions.PreventUpdate
+    return IA_SUGESTOES[tid['index']]
+
+
+@app.callback(
+    Output('chat-window',   'children'),
+    Output('chat-history',  'data'),
+    Output('chat-input',    'value'),
+    Output('chat-status',   'children'),
+    Input('btn-chat-send',  'n_clicks'),
+    Input('chat-input',     'n_submit'),
+    Input('btn-chat-clear', 'n_clicks'),
+    State('chat-input',     'value'),
+    State('chat-history',   'data'),
+    State('dre-store',      'data'),
+    State('extrato-store',  'data'),
+    prevent_initial_call=True,
+)
+def chat_callback(n_send, n_submit, n_clear, user_text, historico, dre_data, extrato_json):
+    tid = ctx.triggered_id
+
+    if tid == 'btn-chat-clear':
+        return _render_chat_window([]), [], '', ''
+
+    if not user_text or not user_text.strip():
+        raise dash.exceptions.PreventUpdate
+
+    user_text = user_text.strip()
+    historico = list(historico or [])
+    historico.append({'role': 'user', 'content': user_text})
+
+    contexto = _build_contexto_financeiro(dre_data, extrato_json)
+    system_prompt = f"""Você é o Assistente Financeiro da Rede Guapo, um ERP financeiro brasileiro.
+Analise os dados financeiros fornecidos e responda perguntas de forma clara e objetiva em português.
+
+Diretrizes:
+- Seja direto e prático, use linguagem de negócios acessível
+- Quando houver números, cite-os com formatação brasileira (R$, vírgula decimal)
+- Use **negrito** para destacar valores e pontos importantes
+- Se dados estiverem ausentes, oriente o usuário a preencher o DRE ou importar extrato
+- Dê sugestões de melhoria quando pertinente
+- Respostas entre 3-8 linhas; análises detalhadas quando necessário
+- Nunca invente dados que não estejam no contexto abaixo
+
+{contexto}"""
+
+    try:
+        client   = _anthropic.Anthropic()
+        response = client.messages.create(
+            model='claude-sonnet-4-20250514',
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[{'role': m['role'], 'content': m['content']} for m in historico],
+        )
+        resposta = response.content[0].text
+    except Exception as e:
+        resposta = f"**Erro ao conectar com a IA:** {str(e)[:120]}\n\nVerifique se `ANTHROPIC_API_KEY` está configurada no servidor."
+
+    historico.append({'role': 'assistant', 'content': resposta})
+    if len(historico) > 20:
+        historico = historico[-20:]
+
+    return _render_chat_window(historico), historico, '', f'✓ {datetime.datetime.now().strftime("%H:%M")}'
 
 
 if __name__ == "__main__":
