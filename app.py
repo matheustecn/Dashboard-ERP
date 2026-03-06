@@ -1666,41 +1666,18 @@ def _build_charts_content():
     ])
 
 def _build_txn_content():
-    status_color = {'Confirmado':'#3ddc84','Processado':'#c9a84c','Pendente':'#ff5c5c'}
-    cat_color    = {'Receita':'#3ddc84','Despesa':'#ff5c5c'}
-    rows = []
-    for t in TRANSACOES_MOCK:
-        sc = status_color.get(t['status'], '#8fa894')
-        cc = cat_color.get(t['categoria'], '#8fa894')
-        r_rgb = '61,220,132' if cc == '#3ddc84' else '255,92,92'
-        s_rgb = {'Confirmado':'61,220,132','Processado':'201,168,76','Pendente':'255,92,92'}.get(t['status'],'100,100,100')
-        rows.append(html.Tr(style={'borderBottom':'1px solid rgba(255,255,255,0.04)'}, children=[
-            html.Td(t['id'],        style={'padding':'13px 20px','fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
-            html.Td(t['data'],      style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#8fa894'}),
-            html.Td(t['descricao'], style={'padding':'13px 16px','fontSize':'13px','color':'#e8ede9'}),
-            html.Td(html.Span(t['categoria'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'11px','fontWeight':'700','color':cc,'background':f'rgba({r_rgb},0.1)'}), style={'padding':'13px 16px'}),
-            html.Td(t['valor'],     style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'12px','color':'#e8ede9','fontWeight':'600','textAlign':'right'}),
-            html.Td(t['variacao'],  style={'padding':'13px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#c9a84c','textAlign':'center'}),
-            html.Td(html.Span(t['status'], style={'padding':'3px 10px','borderRadius':'4px','fontSize':'10px','fontWeight':'700','color':sc,'background':f'rgba({s_rgb},0.1)','fontFamily':"'Space Mono',monospace",'letterSpacing':'1px'}), style={'padding':'13px 20px'}),
-        ]))
     return html.Div([
         html.Div(className='section-header', children=[
             html.Div([html.Div("Histórico Financeiro", className='section-eyebrow'),
                       html.Div("Transações Recentes", className='section-title')])
         ]),
-        html.Div(className='table-card', children=[
-            html.Div(className='table-header', children=[
-                html.Div("Lançamentos — Dezembro 2025", className='table-header-title'),
-                html.Div(f"{len(TRANSACOES_MOCK)} registros", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
-            ]),
-            html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[
-                html.Thead(children=[html.Tr(style={'background':'#1a1f1c','borderBottom':'2px solid rgba(255,255,255,0.06)'}, children=[
-                    html.Th(h, style={'padding':'11px 20px' if i in (0,6) else '11px 16px','textAlign':'right' if i==4 else 'left','fontFamily':"'Space Mono',monospace",'fontSize':'9px','color':'#4d5e52','letterSpacing':'2px','textTransform':'uppercase'})
-                    for i,h in enumerate(["ID","Data","Descrição","Categoria","Valor","Var.","Status"])])]),
-                html.Tbody(rows),
-            ]),
+        html.Div(id='txn-table-container', children=[
+            html.Div("Nenhum extrato importado. Importe um extrato na aba Conciliação Bancária.",
+                     style={'padding':'40px','textAlign':'center','color':'#4d5e52',
+                            'fontFamily':"'Space Mono',monospace",'fontSize':'12px'}),
         ]),
     ])
+
 
 def _nav_result(tab, triggered_nav):
     show = {'display':'block'}; hide = {'display':'none'}
@@ -2590,8 +2567,142 @@ def toggle_indicadores(n):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CALLBACKS — ASSISTENTE IA
+# CALLBACK — TRANSAÇÕES RECENTES (extrato real)
 # ══════════════════════════════════════════════════════════════════════════════
+
+@app.callback(
+    Output('txn-table-container', 'children'),
+    Input('extrato-store', 'data'),
+    prevent_initial_call=False,
+)
+def update_txn_table(extrato_json):
+    if not extrato_json:
+        return html.Div(
+            "Nenhum extrato importado. Importe um extrato na aba Conciliação Bancária para ver as transações.",
+            style={'padding':'60px 40px','textAlign':'center','color':'#4d5e52',
+                   'fontFamily':"'Space Mono',monospace",'fontSize':'12px','lineHeight':'1.8'}
+        )
+
+    try:
+        df = pd.DataFrame(json.loads(extrato_json))
+        df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0)
+
+        # Detectar coluna de data
+        data_col = next((c for c in df.columns if 'data' in c.lower() or 'date' in c.lower()), None)
+        desc_col = next((c for c in df.columns if 'descri' in c.lower() or 'histor' in c.lower()), None)
+        tipo_col = next((c for c in df.columns if 'tipo' in c.lower() or 'categ' in c.lower()), None)
+
+        # Ordena por data desc se possível
+        if data_col:
+            try:
+                df[data_col] = pd.to_datetime(df[data_col], dayfirst=True, errors='coerce')
+                df = df.sort_values(data_col, ascending=False)
+                df[data_col] = df[data_col].dt.strftime('%d/%m/%Y')
+            except Exception:
+                pass
+
+        total = len(df)
+
+        # Calcula período
+        periodo = "Extrato Importado"
+        if data_col and total > 0:
+            datas_validas = df[data_col].dropna()
+            if len(datas_validas) > 0:
+                periodo = f"Período: {datas_validas.iloc[-1]} → {datas_validas.iloc[0]}"
+
+        rows = []
+        for i, (_, row) in enumerate(df.iterrows()):
+            valor     = float(row['Valor (R$)'])
+            is_rec    = valor >= 0
+            val_str   = f"R$ {abs(valor):,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+            categoria = str(row.get(tipo_col, 'Outros') or 'Outros') if tipo_col else ('Receita' if is_rec else 'Despesa')
+            data_str  = str(row.get(data_col, '—')) if data_col else '—'
+            desc_str  = str(row.get(desc_col, '—'))[:60] if desc_col else '—'
+
+            cat_color = '#3ddc84' if is_rec else '#ff5c5c'
+            cat_rgb   = '61,220,132' if is_rec else '255,92,92'
+            val_color = '#3ddc84' if is_rec else '#ff5c5c'
+            sinal     = '+' if is_rec else '-'
+
+            rows.append(html.Tr(
+                style={'borderBottom':'1px solid rgba(255,255,255,0.04)',
+                       'background':'rgba(255,255,255,0.01)' if i % 2 == 0 else 'transparent'},
+                children=[
+                    html.Td(f"#{i+1:03d}", style={'padding':'12px 20px','fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
+                    html.Td(data_str, style={'padding':'12px 16px','fontFamily':"'Space Mono',monospace",'fontSize':'11px','color':'#8fa894','whiteSpace':'nowrap'}),
+                    html.Td(desc_str, style={'padding':'12px 16px','fontSize':'12px','color':'#e8ede9','maxWidth':'320px','overflow':'hidden','textOverflow':'ellipsis','whiteSpace':'nowrap'}),
+                    html.Td(
+                        html.Span(categoria[:20], style={
+                            'padding':'3px 10px','borderRadius':'4px','fontSize':'10px',
+                            'fontWeight':'700','color':cat_color,'background':f'rgba({cat_rgb},0.1)',
+                            'fontFamily':"'Space Mono',monospace",'letterSpacing':'0.5px',
+                        }),
+                        style={'padding':'12px 16px'}
+                    ),
+                    html.Td(
+                        html.Span(f"{sinal} {val_str}", style={'color':val_color,'fontWeight':'700'}),
+                        style={'padding':'12px 20px','fontFamily':"'Space Mono',monospace",'fontSize':'12px','textAlign':'right','whiteSpace':'nowrap'}
+                    ),
+                ]
+            ))
+
+        entradas = df[df['Valor (R$)'] > 0]['Valor (R$)'].sum()
+        saidas   = abs(df[df['Valor (R$)'] < 0]['Valor (R$)'].sum())
+        saldo    = entradas - saidas
+        def brl(x): return f"R$ {x:,.2f}".replace(',','X').replace('.', ',').replace('X','.')
+
+        return html.Div([
+            # Resumo rápido
+            html.Div(style={'display':'grid','gridTemplateColumns':'repeat(4,1fr)','gap':'12px','marginBottom':'20px'}, children=[
+                html.Div(style={'background':'rgba(61,220,132,0.06)','border':'1px solid rgba(61,220,132,0.12)','borderRadius':'10px','padding':'14px 18px'}, children=[
+                    html.Div("ENTRADAS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','letterSpacing':'2px','marginBottom':'6px'}),
+                    html.Div(brl(entradas), style={'fontFamily':"'Space Mono',monospace",'fontSize':'14px','color':'#3ddc84','fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':'rgba(255,92,92,0.06)','border':'1px solid rgba(255,92,92,0.12)','borderRadius':'10px','padding':'14px 18px'}, children=[
+                    html.Div("SAÍDAS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','letterSpacing':'2px','marginBottom':'6px'}),
+                    html.Div(brl(saidas), style={'fontFamily':"'Space Mono',monospace",'fontSize':'14px','color':'#ff5c5c','fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':('rgba(61,220,132,0.06)' if saldo >= 0 else 'rgba(255,92,92,0.06)'),'border':f'1px solid rgba({"61,220,132" if saldo >= 0 else "255,92,92"},0.12)','borderRadius':'10px','padding':'14px 18px'}, children=[
+                    html.Div("SALDO", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','letterSpacing':'2px','marginBottom':'6px'}),
+                    html.Div(brl(saldo), style={'fontFamily':"'Space Mono',monospace",'fontSize':'14px','color':('#3ddc84' if saldo >= 0 else '#ff5c5c'),'fontWeight':'700'}),
+                ]),
+                html.Div(style={'background':'rgba(92,158,255,0.06)','border':'1px solid rgba(92,158,255,0.12)','borderRadius':'10px','padding':'14px 18px'}, children=[
+                    html.Div("REGISTROS", style={'fontFamily':"'Space Mono',monospace",'fontSize':'8px','color':'#4d5e52','letterSpacing':'2px','marginBottom':'6px'}),
+                    html.Div(str(total), style={'fontFamily':"'Space Mono',monospace",'fontSize':'14px','color':'#5c9eff','fontWeight':'700'}),
+                ]),
+            ]),
+
+            # Tabela
+            html.Div(className='table-card', children=[
+                html.Div(className='table-header', children=[
+                    html.Div(periodo, className='table-header-title'),
+                    html.Div(f"{total} transações", style={'fontFamily':"'Space Mono',monospace",'fontSize':'10px','color':'#4d5e52'}),
+                ]),
+                html.Div(style={'overflowX':'auto'}, children=[
+                    html.Table(style={'width':'100%','borderCollapse':'collapse'}, children=[
+                        html.Thead(children=[html.Tr(
+                            style={'background':'#1a1f1c','borderBottom':'2px solid rgba(255,255,255,0.06)'},
+                            children=[
+                                html.Th(h, style={
+                                    'padding':'11px 20px' if i in (0,4) else '11px 16px',
+                                    'textAlign':'right' if i == 4 else 'left',
+                                    'fontFamily':"'Space Mono',monospace",'fontSize':'9px',
+                                    'color':'#4d5e52','letterSpacing':'2px','textTransform':'uppercase',
+                                }) for i, h in enumerate(["ID","Data","Descrição","Tipo","Valor"])
+                            ]
+                        )]),
+                        html.Tbody(rows),
+                    ]),
+                ]),
+            ]),
+        ])
+
+    except Exception as e:
+        return html.Div(
+            f"Erro ao processar extrato: {str(e)}",
+            style={'padding':'40px','textAlign':'center','color':'#ff5c5c',
+                   'fontFamily':"'Space Mono',monospace",'fontSize':'11px'}
+        )
 
 def _build_contexto_financeiro(dre_data, extrato_json):
     """Monta resumo financeiro estruturado para contexto da IA."""
